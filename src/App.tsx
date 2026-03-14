@@ -697,10 +697,11 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
       } catch (err: any) {
         console.error(err);
         let msg = 'بيانات الاعتماد غير صالحة أو حدث خطأ';
-        if (err.code === 'auth/user-not-found') msg = 'هذا الحساب غير موجود، يرجى إنشاء حساب أولاً';
-        if (err.code === 'auth/wrong-password') msg = 'كلمة المرور غير صحيحة';
+        if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') msg = 'اسم المستخدم أو كلمة المرور غير صحيحة. إذا كنت تحاول الدخول لأول مرة، يرجى التأكد من إنشاء الحساب أولاً من خلال تبويب "إنشاء حساب جديد".';
+        if (err.code === 'auth/user-not-found') msg = 'هذا الحساب غير موجود، يرجى إنشاء حساب أولاً من خلال تبويب "إنشاء حساب جديد".';
         if (err.code === 'auth/invalid-email') msg = 'اسم المستخدم غير صالح';
         if (err.code === 'auth/operation-not-allowed') msg = 'خطأ: خدمة تسجيل الدخول غير مفعلة في Firebase. يرجى تفعيل (Email/Password) من لوحة تحكم Firebase (Authentication > Sign-in method).';
+        if (err.code === 'auth/network-request-failed') msg = 'فشل الاتصال بالشبكة. يرجى التأكد من اتصال الإنترنت، وإضافة رابط الموقع (مثل github.io و run.app) إلى (Authorized Domains) في لوحة تحكم Firebase (Authentication > Settings).';
         setError(msg);
       } finally {
         setLoading(false);
@@ -750,6 +751,11 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
           <p className="text-slate-500 dark:text-slate-400 mt-2">
             {isRegistering ? 'إنشاء حساب جديد للبدء في رحلتك التعليمية' : 'مرحباً بك مجدداً! يرجى تسجيل الدخول إلى حسابك.'}
           </p>
+          {!isRegistering && (
+            <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1 font-bold">
+              ملاحظة للمسؤول: يرجى إنشاء حسابك أولاً من خلال تبويب "إنشاء حساب جديد" واختيار رتبة "مسؤول" لتتمكن من الدخول.
+            </p>
+          )}
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">

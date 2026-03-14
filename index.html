@@ -29,6 +29,9 @@
         return false;
       };
       window.onunhandledrejection = function(event) {
+        if (event.reason && event.reason.toString().includes('WebSocket closed without opened')) {
+          return;
+        }
         var display = document.getElementById('error-display');
         var message = document.getElementById('error-message');
         if (display && message) {
@@ -38,6 +41,20 @@
       };
     </script>
     <script type="module" src="src/main.tsx"></script>
+    <script>
+      // Timeout to detect if the app fails to load
+      setTimeout(function() {
+        var root = document.getElementById('root');
+        if (root && root.innerHTML.includes('جاري تحميل المنصة...')) {
+          var display = document.getElementById('error-display');
+          var message = document.getElementById('error-message');
+          if (display && message) {
+            display.style.display = 'block';
+            message.textContent = 'فشل تحميل التطبيق. قد يكون ذلك بسبب خطأ في الاتصال أو أنك تحاول تشغيل النسخة المصدرية مباشرة من GitHub. يرجى استخدام الرابط المشترك (Shared App URL) أو التأكد من بناء المشروع (build) أولاً.';
+          }
+        }
+      }, 10000);
+    </script>
   </body>
 </html>
 
