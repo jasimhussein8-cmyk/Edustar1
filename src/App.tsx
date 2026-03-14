@@ -50,7 +50,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
-import { getApiUrl } from "./config";
+// import { getApiUrl } from "./config";
 import { auth, db } from './firebase';
 import { 
   signInWithEmailAndPassword, 
@@ -106,15 +106,18 @@ const StudyAssistant = ({ user, context }: { user: User, context?: string }) => 
     setLoading(true);
 
     try {
-      const res = await fetch(getApiUrl('/api/ai/study-assistant'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.id, message: userMsg, context })
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+      const model = ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [
+          { role: 'user', parts: [{ text: `You are a helpful study assistant for a student. Context: ${context || 'General study'}. User message: ${userMsg}` }] }
+        ]
       });
-      const data = await res.json();
-      setChat(prev => [...prev, { role: 'ai', text: data.response }]);
+      const response = await model;
+      setChat(prev => [...prev, { role: 'ai', text: response.text || 'عذراً، لم أتمكن من معالجة طلبك.' }]);
     } catch (err) {
       console.error(err);
+      setChat(prev => [...prev, { role: 'ai', text: 'حدث خطأ أثناء الاتصال بالذكاء الاصطناعي.' }]);
     } finally {
       setLoading(false);
     }
@@ -349,23 +352,18 @@ const SubmissionModal = ({ assignment, user, onClose, onSuccess }: { assignment:
     e.preventDefault();
     setLoading(true);
 
-    const formData = new FormData();
-    formData.append('assignmentId', assignment.id.toString());
-    formData.append('userId', user.id.toString());
-    formData.append('textEntry', textEntry);
-    if (file) {
-      formData.append('file', file);
-    }
-
     try {
-      const res = await fetch(getApiUrl('/api/submissions'), {
-        method: 'POST',
-        body: formData
+      await addDoc(collection(db, 'submissions'), {
+        assignmentId: assignment.id.toString(),
+        studentId: user.id.toString(),
+        content: textEntry,
+        fileUrl: '', // For now, just text
+        submittedAt: new Date().toISOString(),
+        grade: null,
+        feedback: ''
       });
-      if (res.ok) {
-        onSuccess();
-        onClose();
-      }
+      onSuccess();
+      onClose();
     } catch (err) {
       console.error("Submission failed", err);
     } finally {
@@ -451,14 +449,17 @@ const AssignmentsView = ({ user }: { user: User }) => {
 
   const fetchData = async () => {
     try {
-      const [assignmentsRes, submissionsRes] = await Promise.all([
-        fetch(getApiUrl(`/api/assignments/${user.grade}`)),
-        fetch(getApiUrl(`/api/submissions/user/${user.id}`))
+      const assignmentsQuery = query(collection(db, 'assignments'), where('grade', '==', user.grade));
+      const submissionsQuery = query(collection(db, 'submissions'), where('studentId', '==', user.id));
+      
+      const [assignmentsSnap, submissionsSnap] = await Promise.all([
+        getDocs(assignmentsQuery),
+        getDocs(submissionsQuery)
       ]);
-      const [assignmentsData, submissionsData] = await Promise.all([
-        assignmentsRes.json(),
-        submissionsRes.json()
-      ]);
+      
+      const assignmentsData = assignmentsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Assignment));
+      const submissionsData = submissionsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Submission));
+      
       setAssignments(assignmentsData);
       setSubmissions(submissionsData);
       setLoading(false);
@@ -522,8 +523,12 @@ const AssignmentsView = ({ user }: { user: User }) => {
                     onClick={async (e) => {
                       e.stopPropagation();
                       if(window.confirm('هل تريد حذف هذا الواجب؟')) {
-                        await fetch(getApiUrl(`/api/admin/assignments/${assignment.id}`), { method: 'DELETE' });
-                        fetchData();
+                        try {
+                          await deleteDoc(doc(db, 'assignments', assignment.id));
+                          fetchData();
+                        } catch (err) {
+                          console.error(err);
+                        }
                       }
                     }}
                     className="text-red-400 hover:text-red-600 dark:hover:text-red-400 p-1 mr-2"
@@ -557,7 +562,7 @@ const AssignmentsView = ({ user }: { user: User }) => {
                   <div className="flex flex-col items-end gap-2">
                     {submission.file_url && (
                       <a 
-                        href={getApiUrl(submission.file_url)} 
+                        href={submission.file_url} 
                         target="_blank" 
                         rel="noopener noreferrer"
                         className="flex items-center gap-1 text-xs text-indigo-600 hover:underline"
@@ -923,9 +928,13 @@ const PaymentView = ({ user }: { user: User }) => {
   const [history, setHistory] = useState<any[]>([]);
 
   const fetchHistory = async () => {
-    const res = await fetch(getApiUrl(`/api/payments/history/${user.id}`));
-    const data = await res.json();
-    setHistory(data);
+    try {
+      const q = query(collection(db, 'payments'), where('userId', '==', user.id), orderBy('createdAt', 'desc'));
+      const snap = await getDocs(q);
+      setHistory(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    } catch (err) {
+      console.error("Failed to fetch payment history", err);
+    }
   };
 
   useEffect(() => {
@@ -935,31 +944,28 @@ const PaymentView = ({ user }: { user: User }) => {
   const handlePayment = async () => {
     setLoading(true);
     try {
-      const res = await fetch(getApiUrl('/api/payments/initiate'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.id, amount: parseInt(amount), method })
+      const paymentData = {
+        userId: user.id,
+        amount: parseInt(amount),
+        method,
+        status: 'completed', // Simulated success
+        transaction_id: 'TXN-' + Math.random().toString(36).substr(2, 9),
+        createdAt: new Date().toISOString()
+      };
+      
+      await addDoc(collection(db, 'payments'), paymentData);
+      
+      // Update user points/balance if needed
+      const userRef = doc(db, 'users', user.id);
+      await updateDoc(userRef, {
+        points: (user.points || 0) + (parseInt(amount) / 100) // Example conversion
       });
-      const data = await res.json();
-      if (data.success) {
-        // In a real app, redirect to data.redirectUrl
-        // For simulation, we'll just show a success message and verify
-        alert(`جاري توجيهك إلى بوابة ${method === 'zain_cash' ? 'زين كاش' : 'ماستر كارد'}...`);
-        
-        // Simulate callback after 2 seconds
-        setTimeout(async () => {
-          await fetch(getApiUrl('/api/payments/verify'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ transactionId: data.transactionId, status: 'completed' })
-          });
-          alert('تمت عملية الدفع بنجاح!');
-          fetchHistory();
-          setLoading(false);
-        }, 2000);
-      }
+      
+      alert('تمت عملية الدفع بنجاح!');
+      fetchHistory();
     } catch (err) {
       console.error(err);
+    } finally {
       setLoading(false);
     }
   };
@@ -1081,6 +1087,9 @@ const GoogleDrivePicker = ({ user, onSelect }: { user: User; onSelect: (file: an
     setLoading(true);
     setError(null);
     try {
+      // Google Drive integration disabled in static mode
+      setError('ميزة Google Drive تتطلب خادم خلفي وهي غير متوفرة في النسخة الثابتة حالياً.');
+      /*
       const res = await fetch(getApiUrl(`/api/google/drive/files?userId=${user.id}`));
       if (res.ok) {
         const data = await res.json();
@@ -1089,6 +1098,7 @@ const GoogleDrivePicker = ({ user, onSelect }: { user: User; onSelect: (file: an
         const err = await res.json();
         setError(err.error || 'Failed to fetch files');
       }
+      */
     } catch (err) {
       setError('Connection error');
     } finally {
@@ -1098,9 +1108,12 @@ const GoogleDrivePicker = ({ user, onSelect }: { user: User; onSelect: (file: an
 
   const handleConnect = async () => {
     try {
+      alert('ميزة Google Drive تتطلب خادم خلفي وهي غير متوفرة في النسخة الثابتة حالياً.');
+      /*
       const res = await fetch(getApiUrl('/api/auth/google/drive/url'));
       const { url } = await res.json();
       window.open(url, 'google_drive_auth', 'width=600,height=700');
+      */
     } catch (err) {
       console.error(err);
     }
@@ -1289,7 +1302,10 @@ const GradeContentWidget = ({ grade }: { grade: string }) => {
   const [content, setContent] = useState<any[]>([]);
   
   useEffect(() => {
-    fetch(`/api/grade-content/${grade}`).then(res => res.json()).then(setContent);
+    const q = query(collection(db, 'grade_content'), where('grade', '==', grade));
+    getDocs(q).then(snap => {
+      setContent(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    });
   }, [grade]);
 
   if (content.length === 0) return null;
@@ -1511,15 +1527,18 @@ const RewardsStore = ({ user, stats, onPurchase }: { user: User, stats: UserStat
 
   useEffect(() => {
     const fetchData = async () => {
-      const [rewardsRes, userRewardsRes] = await Promise.all([
-        fetch(getApiUrl('/api/rewards')),
-        fetch(getApiUrl(`/api/rewards/user/${user.id}`))
-      ]);
-      const rewardsData = await rewardsRes.json();
-      const userRewardsData = await userRewardsRes.json();
-      setRewards(rewardsData);
-      setPurchasedRewards(userRewardsData.map((r: any) => r.id));
-      setLoading(false);
+      try {
+        const rewardsSnap = await getDocs(collection(db, 'rewards'));
+        const userRewardsQuery = query(collection(db, 'user_rewards'), where('userId', '==', user.id));
+        const userRewardsSnap = await getDocs(userRewardsQuery);
+        
+        setRewards(rewardsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Reward)));
+        setPurchasedRewards(userRewardsSnap.docs.map(doc => doc.data().rewardId));
+        setLoading(false);
+      } catch (err) {
+        console.error(err);
+        setLoading(false);
+      }
     };
     fetchData();
   }, [user.id]);
@@ -1529,14 +1548,24 @@ const RewardsStore = ({ user, stats, onPurchase }: { user: User, stats: UserStat
       alert('ليس لديك عملات كافية!');
       return;
     }
-    const res = await fetch(getApiUrl('/api/rewards/purchase'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: user.id, rewardId: reward.id })
-    });
-    if (res.ok) {
+    
+    try {
+      await addDoc(collection(db, 'user_rewards'), {
+        userId: user.id,
+        rewardId: reward.id,
+        purchasedAt: new Date().toISOString()
+      });
+      
+      // Update user coins
+      const userRef = doc(db, 'users', user.id);
+      await updateDoc(userRef, {
+        coins: stats.coins - reward.cost
+      });
+      
       setPurchasedRewards([...purchasedRewards, reward.id]);
       onPurchase();
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -1639,27 +1668,31 @@ const StudentDashboard = ({ user, setActiveTab }: { user: User, setActiveTab: (t
 
   const fetchData = async () => {
     try {
-      const [subjectsRes, statsRes, progressRes, recsRes, favsRes] = await Promise.all([
-        fetch(getApiUrl(`/api/subjects/${user.grade}`)),
-        fetch(getApiUrl(`/api/gamification/stats/${user.id}`)),
-        fetch(getApiUrl(`/api/subjects/progress/${user.id}/${user.grade}`)),
-        fetch(getApiUrl(`/api/recommendations/${user.id}`)),
-        fetch(getApiUrl(`/api/gamification/favorites/${user.id}`))
+      const subjectsQuery = query(collection(db, 'subjects'), where('grade', '==', user.grade));
+      const progressQuery = query(collection(db, 'progress'), where('userId', '==', user.id));
+      const recsQuery = query(collection(db, 'recommendations'), where('userId', '==', user.id));
+      const favsQuery = query(collection(db, 'favorites'), where('userId', '==', user.id));
+      
+      const [subjectsSnap, progressSnap, recsSnap, favsSnap] = await Promise.all([
+        getDocs(subjectsQuery),
+        getDocs(progressQuery),
+        getDocs(recsQuery),
+        getDocs(favsQuery)
       ]);
       
-      const [subjectsData, statsData, progressData, recsData, favsData] = await Promise.all([
-        subjectsRes.json(),
-        statsRes.json(),
-        progressRes.json(),
-        recsRes.json(),
-        favsRes.json()
-      ]);
-
-      setSubjects(subjectsData);
-      setStats(statsData);
-      setProgress(progressData);
-      setRecommendations(recsData);
-      setFavoriteLessons(favsData);
+      setSubjects(subjectsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Subject)));
+      setProgress(progressSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setRecommendations(recsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setFavoriteLessons(favsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      
+      // Stats come from the user object itself
+      setStats({
+        points: user.points || 0,
+        rank: 0, // Need leaderboard for this
+        badges: 0,
+        streak: 0
+      });
+      
       setLoading(false);
     } catch (err) {
       console.error("Failed to fetch dashboard data", err);
@@ -1674,15 +1707,43 @@ const StudentDashboard = ({ user, setActiveTab }: { user: User, setActiveTab: (t
   const generateRecommendations = async () => {
     setGenerating(true);
     try {
-      const res = await fetch(getApiUrl('/api/recommendations/generate'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.id })
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const model = "gemini-3-flash-preview";
+      
+      const prompt = `بناءً على بيانات الطالب التالية:
+      الاسم: ${user.full_name}
+      الصف: ${user.grade}
+      النقاط: ${user.points}
+      المواد الدراسية: ${subjects.map(s => s.name).join(', ')}
+      
+      اقترح 3 توصيات دراسية مخصصة لهذا الطالب. اجعلها قصيرة ومحفزة.
+      يجب أن يكون الرد بتنسيق JSON كالتالي:
+      {
+        "recommendations": [
+          { "id": "1", "title": "عنوان التوصية", "description": "وصف التوصية", "type": "study|exam|practice" }
+        ]
+      }`;
+
+      const response = await ai.models.generateContent({
+        model,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: {
+          responseMimeType: "application/json"
+        }
       });
-      if (res.ok) {
-        const data = await res.json();
-        setRecommendations(data.recommendations);
-      }
+
+      const data = JSON.parse(response.text || '{"recommendations": []}');
+      setRecommendations(data.recommendations);
+      
+      // Save recommendations to Firestore
+      await Promise.all(data.recommendations.map((rec: any) => 
+        addDoc(collection(db, 'recommendations'), {
+          ...rec,
+          userId: user.id,
+          createdAt: new Date().toISOString()
+        })
+      ));
+      
     } catch (err) {
       console.error("Failed to generate recommendations", err);
     } finally {
@@ -2197,12 +2258,26 @@ const LeaderboardView = ({ user }: { user: User }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(getApiUrl(`/api/gamification/leaderboard/${user.grade}`))
-      .then(res => res.json())
-      .then(data => {
-        setLeaderboard(data);
-        setLoading(false);
-      });
+    const q = query(
+      collection(db, 'users'),
+      where('grade', '==', user.grade),
+      orderBy('points', 'desc'),
+      limit(50)
+    );
+    
+    getDocs(q).then(snap => {
+      setLeaderboard(snap.docs.map((doc, index) => ({
+        id: doc.id,
+        full_name: doc.data().full_name,
+        points: doc.data().points || 0,
+        rank: index + 1,
+        role: doc.data().role
+      })));
+      setLoading(false);
+    }).catch(err => {
+      console.error("Failed to fetch leaderboard", err);
+      setLoading(false);
+    });
   }, [user.grade]);
 
   return (
@@ -2372,35 +2447,34 @@ const ChatView = ({ user }: { user: User }) => {
   const [newMessage, setNewMessage] = useState('');
 
   useEffect(() => {
-    fetch(getApiUrl(`/api/messages/${user.id}`))
-      .then(res => res.json())
-      .then(setMessages);
+    const q = query(
+      collection(db, 'messages'),
+      where('participants', 'array-contains', user.id),
+      orderBy('createdAt', 'asc')
+    );
+    
+    const unsubscribe = onSnapshot(q, (snap) => {
+      setMessages(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Message)));
+    });
+    
+    return () => unsubscribe();
   }, [user.id]);
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMessage.trim()) return;
 
-    const res = await fetch(getApiUrl('/api/messages'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    try {
+      await addDoc(collection(db, 'messages'), {
         senderId: user.id,
-        receiverId: 1, // Defaulting to admin/teacher for demo
-        content: newMessage
-      })
-    });
-
-    if (res.ok) {
-      setMessages([...messages, { 
-        id: Date.now(), 
-        sender_id: user.id, 
-        receiver_id: 1, 
-        content: newMessage, 
-        created_at: new Date().toISOString(),
-        sender_name: user.full_name
-      }]);
+        receiverId: 'admin', // Defaulting to admin for demo
+        participants: [user.id, 'admin'],
+        content: newMessage,
+        createdAt: new Date().toISOString()
+      });
       setNewMessage('');
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -2460,12 +2534,11 @@ const ExamView = ({ user, exam, onComplete, onCancel }: { user: User, exam: Exam
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/exam-questions/${exam.id}`)
-      .then(res => res.json())
-      .then(data => {
-        setQuestions(data);
-        setLoading(false);
-      });
+    const q = query(collection(db, 'questions'), where('examId', '==', exam.id));
+    getDocs(q).then(snap => {
+      setQuestions(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Question)));
+      setLoading(false);
+    });
   }, [exam.id]);
 
   const handleSubmit = async () => {
@@ -2476,21 +2549,25 @@ const ExamView = ({ user, exam, onComplete, onCancel }: { user: User, exam: Exam
       }
     });
 
-    const res = await fetch(getApiUrl('/api/exams/submit'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    try {
+      await addDoc(collection(db, 'exam_submissions'), {
         userId: user.id,
         examId: exam.id,
         score,
-        total: questions.length
-      })
-    });
-
-    if (res.ok) {
-      const data = await res.json();
+        total: questions.length,
+        submittedAt: new Date().toISOString()
+      });
+      
+      // Award points
+      const userRef = doc(db, 'users', user.id);
+      await updateDoc(userRef, {
+        points: (user.points || 0) + (score * 5)
+      });
+      
       setSubmitted(true);
       onComplete(score, questions.length);
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -2603,25 +2680,27 @@ const SubjectDetailView = ({ user, subject, onBack }: { user: User, subject: Sub
   const [favorites, setFavorites] = useState<number[]>([]);
 
   useEffect(() => {
-    fetch(`/api/gamification/favorites/${user.id}`)
-      .then(res => res.json())
-      .then(data => setFavorites(data.map((f: any) => f.lesson_id)));
+    const q = query(collection(db, 'favorites'), where('userId', '==', user.id));
+    getDocs(q).then(snap => {
+      setFavorites(snap.docs.map(doc => doc.data().lessonId));
+    });
   }, [user.id]);
 
-  const toggleFavorite = async (lessonId: number) => {
+  const toggleFavorite = async (lessonId: string) => {
     const isFavorite = favorites.includes(lessonId);
-    const method = isFavorite ? 'DELETE' : 'POST';
     
     try {
-      await fetch(getApiUrl('/api/gamification/favorites'), {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.id, lessonId })
-      });
-      
       if (isFavorite) {
+        const q = query(collection(db, 'favorites'), where('userId', '==', user.id), where('lessonId', '==', lessonId));
+        const snap = await getDocs(q);
+        await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
         setFavorites(favorites.filter(id => id !== lessonId));
       } else {
+        await addDoc(collection(db, 'favorites'), {
+          userId: user.id,
+          lessonId,
+          subjectId: subject.id
+        });
         setFavorites([...favorites, lessonId]);
       }
     } catch (err) {
@@ -2631,26 +2710,33 @@ const SubjectDetailView = ({ user, subject, onBack }: { user: User, subject: Sub
 
   useEffect(() => {
     const fetchData = async () => {
-      const [lessonsRes, examsRes] = await Promise.all([
-        fetch(getApiUrl(`/api/lessons/${subject.id}`)),
-        fetch(getApiUrl(`/api/exams/${subject.id}`))
-      ]);
-      const [lessonsData, examsData] = await Promise.all([
-        lessonsRes.json(),
-        examsRes.json()
-      ]);
-      setLessons(lessonsData);
-      setExams(examsData);
-      setLoading(false);
+      try {
+        const lessonsQuery = query(collection(db, 'lessons'), where('subjectId', '==', subject.id));
+        const examsQuery = query(collection(db, 'exams'), where('subjectId', '==', subject.id));
+        
+        const [lessonsSnap, examsSnap] = await Promise.all([
+          getDocs(lessonsQuery),
+          getDocs(examsQuery)
+        ]);
+        
+        setLessons(lessonsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Lesson)));
+        setExams(examsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Exam)));
+        setLoading(false);
+      } catch (err) {
+        console.error(err);
+        setLoading(false);
+      }
     };
     fetchData();
   }, [subject.id]);
 
   useEffect(() => {
     if (selectedLesson) {
-      fetch(getApiUrl(`/api/notes/${user.id}/${selectedLesson.id}`))
-        .then(res => res.json())
-        .then(data => setNote(data.content));
+      const q = query(collection(db, 'notes'), where('userId', '==', user.id), where('lessonId', '==', selectedLesson.id));
+      getDocs(q).then(snap => {
+        if (!snap.empty) setNote(snap.docs[0].data().content);
+        else setNote('');
+      });
     }
   }, [selectedLesson, user.id]);
 
@@ -2658,11 +2744,22 @@ const SubjectDetailView = ({ user, subject, onBack }: { user: User, subject: Sub
     if (!selectedLesson) return;
     setSavingNote(true);
     try {
-      await fetch(getApiUrl('/api/notes'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.id, lessonId: selectedLesson.id, content: note })
-      });
+      const q = query(collection(db, 'notes'), where('userId', '==', user.id), where('lessonId', '==', selectedLesson.id));
+      const snap = await getDocs(q);
+      
+      if (snap.empty) {
+        await addDoc(collection(db, 'notes'), {
+          userId: user.id,
+          lessonId: selectedLesson.id,
+          content: note,
+          updatedAt: new Date().toISOString()
+        });
+      } else {
+        await updateDoc(snap.docs[0].ref, {
+          content: note,
+          updatedAt: new Date().toISOString()
+        });
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -2670,15 +2767,18 @@ const SubjectDetailView = ({ user, subject, onBack }: { user: User, subject: Sub
     }
   };
 
-  const handleCompleteLesson = async (lessonId: number) => {
-    const res = await fetch(getApiUrl('/api/gamification/complete-lesson'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: user.id, lessonId })
-    });
-    if (res.ok) {
+  const handleCompleteLesson = async (lessonId: string) => {
+    try {
+      // Award points
+      const userRef = doc(db, 'users', user.id);
+      await updateDoc(userRef, {
+        points: (user.points || 0) + 20
+      });
+      
       setCompletedLessons([...completedLessons, lessonId]);
       alert('أحسنت! لقد حصلت على 20 نقطة.');
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -2752,7 +2852,7 @@ const SubjectDetailView = ({ user, subject, onBack }: { user: User, subject: Sub
                       <button 
                         onClick={(e) => { 
                           e.stopPropagation(); 
-                          const url = lesson.url.startsWith('http') ? lesson.url : getApiUrl(lesson.url);
+                          const url = lesson.url;
                           window.open(url, '_blank'); 
                         }}
                         className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-xl transition-all"
@@ -2865,12 +2965,11 @@ const SubjectsView = ({ user }: { user: User }) => {
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
-    fetch(`/api/subjects/${user.grade}`)
-      .then(res => res.json())
-      .then(data => {
-        setSubjects(data);
-        setLoading(false);
-      });
+    const q = query(collection(db, 'subjects'), where('grade', '==', user.grade));
+    getDocs(q).then(snap => {
+      setSubjects(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Subject)));
+      setLoading(false);
+    });
   }, [user.grade]);
 
   const filteredSubjects = subjects.filter(s => 
@@ -2972,18 +3071,27 @@ const AdminUsersView = () => {
     'التربية الإسلامية'
   ];
 
-  const fetchUsers = () => {
-    fetch(getApiUrl('/api/admin/users')).then(res => res.json()).then(setUsers);
+  const fetchUsers = async () => {
+    try {
+      const snap = await getDocs(collection(db, 'users'));
+      setUsers(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as User)));
+    } catch (err) {
+      console.error("Failed to fetch users", err);
+    }
   };
 
   useEffect(() => {
     fetchUsers();
   }, []);
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: string) => {
     if (window.confirm('هل أنت متأكد من حذف هذا المستخدم؟')) {
-      await fetch(getApiUrl(`/api/admin/users/${id}`), { method: 'DELETE' });
-      fetchUsers();
+      try {
+        await deleteDoc(doc(db, 'users', id));
+        fetchUsers();
+      } catch (err) {
+        console.error("Failed to delete user", err);
+      }
     }
   };
 
@@ -3005,16 +3113,20 @@ const AdminUsersView = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const url = editingUser ? `/api/admin/users/${editingUser.id}` : '/api/admin/users';
-    const method = editingUser ? 'PUT' : 'POST';
-    
-    const res = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(formData)
-    });
-
-    if (res.ok) {
+    try {
+      if (editingUser) {
+        const userRef = doc(db, 'users', editingUser.id);
+        await updateDoc(userRef, formData);
+      } else {
+        // For new users, they should really sign up themselves to get a UID
+        // But if we must create one, we'd need a UID. 
+        // For now, let's assume we're mostly editing or we use a random ID (not ideal for Auth)
+        const newDoc = await addDoc(collection(db, 'users'), {
+          ...formData,
+          createdAt: new Date().toISOString()
+        });
+      }
+      
       setShowAdd(false);
       setEditingUser(null);
       setFormData({ 
@@ -3022,9 +3134,9 @@ const AdminUsersView = () => {
         assigned_grades: [], assigned_sections: [], assigned_subjects: []
       });
       fetchUsers();
-    } else {
-      const errorData = await res.json();
-      alert(`فشل في حفظ المستخدم: ${errorData.message}`);
+    } catch (err) {
+      console.error("Failed to save user", err);
+      alert(`فشل في حفظ المستخدم`);
     }
   };
 
@@ -3265,16 +3377,19 @@ const ExamTakingView = ({ exam, user, onComplete }: { exam: Exam, user: User, on
   const [timeLeft, setTimeLeft] = useState(exam.duration * 60);
 
   useEffect(() => {
-    fetch(getApiUrl(`/api/exam-questions/${exam.id}`))
-      .then(res => res.json())
-      .then(data => {
-        const parsedData = data.map((q: any) => ({
-          ...q,
-          options: typeof q.options === 'string' ? JSON.parse(q.options) : q.options
-        }));
-        setQuestions(parsedData);
-        setLoading(false);
+    const q = query(collection(db, 'questions'), where('examId', '==', exam.id));
+    getDocs(q).then(snap => {
+      const data = snap.docs.map(doc => {
+        const d = doc.data();
+        return {
+          id: doc.id,
+          ...d,
+          options: typeof d.options === 'string' ? JSON.parse(d.options) : d.options
+        } as unknown as Question;
       });
+      setQuestions(data);
+      setLoading(false);
+    });
   }, [exam.id]);
 
   const handleSelectOption = (option: string) => {
@@ -3304,16 +3419,20 @@ const ExamTakingView = ({ exam, user, onComplete }: { exam: Exam, user: User, on
     });
 
     try {
-      await fetch(getApiUrl('/api/exams/submit'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: user.id,
-          examId: exam.id,
-          score,
-          total: questions.length
-        })
+      await addDoc(collection(db, 'exam_submissions'), {
+        userId: user.id,
+        examId: exam.id,
+        score,
+        total: questions.length,
+        submittedAt: new Date().toISOString()
       });
+      
+      // Award points
+      const userRef = doc(db, 'users', user.id);
+      await updateDoc(userRef, {
+        points: (user.points || 0) + (score * 10)
+      });
+      
       onComplete(score, questions.length);
     } catch (err) {
       console.error("Failed to submit exam", err);
@@ -3468,8 +3587,9 @@ const ExamsView = ({ user }: { user: User }) => {
 
   const fetchExams = () => {
     setLoading(true);
-    fetch(getApiUrl(`/api/exams-by-grade/${user.grade}`)).then(res => res.json()).then(data => {
-      setExams(data);
+    const q = query(collection(db, 'exams'), where('grade', '==', user.grade));
+    getDocs(q).then(snap => {
+      setExams(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Exam)));
       setLoading(false);
     });
   };
@@ -3605,17 +3725,24 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
   };
 
   const fetchExams = () => {
-    fetch(getApiUrl(`/api/admin/exams/${subject.id}`)).then(res => res.json()).then(setExams);
+    const q = query(collection(db, 'exams'), where('subjectId', '==', subject.id));
+    getDocs(q).then(snap => {
+      setExams(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Exam)));
+    });
   };
 
-  const fetchQuestions = (examId: number) => {
-    fetch(getApiUrl(`/api/admin/questions/${examId}`)).then(res => res.json()).then(data => {
-      // Ensure options are parsed if they come as JSON string
-      const parsedData = data.map((q: any) => ({
-        ...q,
-        options: typeof q.options === 'string' ? JSON.parse(q.options) : q.options
-      }));
-      setQuestions(parsedData);
+  const fetchQuestions = (examId: string) => {
+    const q = query(collection(db, 'questions'), where('examId', '==', examId));
+    getDocs(q).then(snap => {
+      const data = snap.docs.map(doc => {
+        const d = doc.data();
+        return {
+          id: doc.id,
+          ...d,
+          options: typeof d.options === 'string' ? JSON.parse(d.options) : d.options
+        } as unknown as Question;
+      });
+      setQuestions(data);
     });
   };
 
@@ -3631,15 +3758,17 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
 
   const handleAddExam = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = await fetch(getApiUrl('/api/admin/exams'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...newExam, subjectId: subject.id })
-    });
-    if (res.ok) {
+    try {
+      await addDoc(collection(db, 'exams'), {
+        ...newExam,
+        subjectId: subject.id,
+        grade: subject.grade
+      });
       setShowAddExam(false);
       setNewExam({ title: '', duration: 30 });
       fetchExams();
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -3647,20 +3776,24 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
     e.preventDefault();
     if (!selectedExam) return;
 
-    const url = editingQuestion ? `/api/admin/questions/${editingQuestion.id}` : '/api/admin/questions';
-    const method = editingQuestion ? 'PUT' : 'POST';
-
-    const res = await fetch(getApiUrl(url), {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...newQuestion, examId: selectedExam.id })
-    });
-
-    if (res.ok) {
+    try {
+      if (editingQuestion) {
+        await updateDoc(doc(db, 'questions', editingQuestion.id), {
+          ...newQuestion,
+          examId: selectedExam.id
+        });
+      } else {
+        await addDoc(collection(db, 'questions'), {
+          ...newQuestion,
+          examId: selectedExam.id
+        });
+      }
       setShowAddQuestion(false);
       setEditingQuestion(null);
       setNewQuestion({ questionText: '', options: ['', '', '', ''], correctAnswer: '', type: 'mcq' });
       fetchQuestions(selectedExam.id);
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -3675,18 +3808,31 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
     setShowAddQuestion(true);
   };
 
-  const handleDeleteExam = async (id: number) => {
+  const handleDeleteExam = async (id: string) => {
     if (window.confirm('هل تريد حذف هذا الامتحان وكل أسئلته؟')) {
-      await fetch(getApiUrl(`/api/admin/exams/${id}`), { method: 'DELETE' });
-      fetchExams();
-      if (selectedExam?.id === id) setSelectedExam(null);
+      try {
+        await deleteDoc(doc(db, 'exams', id));
+        // Also delete associated questions
+        const q = query(collection(db, 'questions'), where('examId', '==', id));
+        const snap = await getDocs(q);
+        await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+        
+        fetchExams();
+        if (selectedExam?.id === id) setSelectedExam(null);
+      } catch (err) {
+        console.error(err);
+      }
     }
   };
 
-  const handleDeleteQuestion = async (id: number) => {
+  const handleDeleteQuestion = async (id: string) => {
     if (window.confirm('هل تريد حذف هذا السؤال؟')) {
-      await fetch(getApiUrl(`/api/admin/questions/${id}`), { method: 'DELETE' });
-      if (selectedExam) fetchQuestions(selectedExam.id);
+      try {
+        await deleteDoc(doc(db, 'questions', id));
+        if (selectedExam) fetchQuestions(selectedExam.id);
+      } catch (err) {
+        console.error(err);
+      }
     }
   };
 
@@ -4011,18 +4157,30 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
     'الخامس الابتدائي', 'السادس الابتدائي', 'الأول المتوسط', 'الثاني المتوسط', 'الثالث المتوسط', 'الرابع الإعدادي', 'الخامس الإعدادي', 'السادس الإعدادي'
   ] : user.role === 'teacher' ? (user.assigned_grades || []) : [user.grade];
 
-  const fetchSubjects = () => {
-    fetch(getApiUrl(`/api/subjects/${selectedGrade}`)).then(res => res.json()).then(data => {
+  const fetchSubjects = async () => {
+    try {
+      const q = query(collection(db, 'subjects'), where('grade', '==', selectedGrade));
+      const snap = await getDocs(q);
+      const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Subject));
+      
       if (user.role === 'teacher') {
         setSubjects(data.filter(s => user.assigned_subjects?.includes(s.name)));
       } else {
         setSubjects(data);
       }
-    });
+    } catch (err) {
+      console.error("Failed to fetch subjects", err);
+    }
   };
 
-  const fetchLessons = (subjectId: number) => {
-    fetch(getApiUrl(`/api/lessons/${subjectId}`)).then(res => res.json()).then(setLessons);
+  const fetchLessons = async (subjectId: string) => {
+    try {
+      const q = query(collection(db, 'lessons'), where('subjectId', '==', subjectId));
+      const snap = await getDocs(q);
+      setLessons(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Lesson)));
+    } catch (err) {
+      console.error("Failed to fetch lessons", err);
+    }
   };
 
   useEffect(() => {
@@ -4037,15 +4195,13 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
 
   const handleAddSubject = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = await fetch(getApiUrl('/api/admin/subjects'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newSubject)
-    });
-    if (res.ok) {
+    try {
+      await addDoc(collection(db, 'subjects'), newSubject);
       setShowAddSubject(false);
-      setNewSubject({ name: '', grade: 'السادس الإعدادي' });
+      setNewSubject({ name: '', grade: selectedGrade });
       fetchSubjects();
+    } catch (err) {
+      console.error("Failed to add subject", err);
     }
   };
 
@@ -4053,43 +4209,46 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
     e.preventDefault();
     if (!selectedSubject) return;
     
-    const formData = new FormData();
-    formData.append('subjectId', selectedSubject.id.toString());
-    formData.append('title', newLesson.title);
-    formData.append('content', newLesson.content);
-    formData.append('type', newLesson.type);
-    
-    if (newLesson.sourceType === 'file' && selectedFile) {
-      formData.append('file', selectedFile);
-    } else {
-      formData.append('url', newLesson.url);
-    }
+    try {
+      const lessonData = {
+        subjectId: selectedSubject.id,
+        title: newLesson.title,
+        content: newLesson.content,
+        type: newLesson.type,
+        url: newLesson.url,
+        createdAt: new Date().toISOString()
+      };
 
-    const res = await fetch(getApiUrl('/api/admin/lessons'), {
-      method: 'POST',
-      body: formData
-    });
-    
-    if (res.ok) {
+      await addDoc(collection(db, 'lessons'), lessonData);
+      
       setShowAddLesson(false);
       setNewLesson({ title: '', content: '', type: 'video', url: '', sourceType: 'url' });
-      setSelectedFile(null);
       fetchLessons(selectedSubject.id);
+    } catch (err) {
+      console.error("Failed to add lesson", err);
     }
   };
 
-  const handleDeleteSubject = async (id: number) => {
+  const handleDeleteSubject = async (id: string) => {
     if (window.confirm('هل تريد حذف هذه المادة وكل دروسها؟')) {
-      await fetch(getApiUrl(`/api/admin/subjects/${id}`), { method: 'DELETE' });
-      fetchSubjects();
-      if (selectedSubject?.id === id) setSelectedSubject(null);
+      try {
+        await deleteDoc(doc(db, 'subjects', id));
+        fetchSubjects();
+        if (selectedSubject?.id === id) setSelectedSubject(null);
+      } catch (err) {
+        console.error("Failed to delete subject", err);
+      }
     }
   };
 
-  const handleDeleteLesson = async (id: number) => {
+  const handleDeleteLesson = async (id: string) => {
     if (window.confirm('هل تريد حذف هذا الدرس؟')) {
-      await fetch(getApiUrl(`/api/admin/lessons/${id}`), { method: 'DELETE' });
-      if (selectedSubject) fetchLessons(selectedSubject.id);
+      try {
+        await deleteDoc(doc(db, 'lessons', id));
+        if (selectedSubject) fetchLessons(selectedSubject.id);
+      } catch (err) {
+        console.error("Failed to delete lesson", err);
+      }
     }
   };
 
@@ -4313,7 +4472,7 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
                       <button 
                         onClick={(e) => { 
                           e.stopPropagation(); 
-                          const url = l.url.startsWith('http') ? l.url : getApiUrl(l.url);
+                          const url = l.url;
                           window.open(url, '_blank'); 
                         }}
                         className="text-indigo-600 dark:text-indigo-400 p-1 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded"
@@ -4396,53 +4555,60 @@ const GradesView = ({ user }: { user: User }) => {
 
   useEffect(() => {
     if (selectedGrade && selectedCategory) {
-      let url = `/api/grade-content/${selectedGrade}/${selectedCategory}`;
-      const params = new URLSearchParams();
-      if (selectedSection) params.append('section', selectedSection);
-      if (selectedSubject) params.append('subject', selectedSubject);
-      if (params.toString()) url += `?${params.toString()}`;
-
-      fetch(getApiUrl(url))
-        .then(res => res.json())
-        .then(setContent);
+      let q = query(
+        collection(db, 'grade_content'),
+        where('grade', '==', selectedGrade),
+        where('category', '==', selectedCategory)
+      );
+      
+      if (selectedSection) {
+        q = query(q, where('section', '==', selectedSection));
+      }
+      if (selectedSubject) {
+        q = query(q, where('subject', '==', selectedSubject));
+      }
+      
+      getDocs(q).then(snap => {
+        setContent(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      });
     }
   }, [selectedGrade, selectedCategory, selectedSection, selectedSubject]);
 
   const handleAddContent = async (e: React.FormEvent) => {
     e.preventDefault();
-    const formData = new FormData();
-    formData.append('grade', selectedGrade || '');
-    formData.append('category', selectedCategory || '');
-    formData.append('title', newContent.title);
-    formData.append('description', newContent.description);
-    formData.append('type', newContent.type);
-    formData.append('section', selectedSection || '');
-    formData.append('subject', selectedSubject || '');
+    
+    try {
+      const contentData = {
+        grade: selectedGrade || '',
+        category: selectedCategory || '',
+        title: newContent.title,
+        description: newContent.description,
+        type: newContent.type,
+        section: selectedSection || '',
+        subject: selectedSubject || '',
+        url: newContent.url,
+        createdAt: new Date().toISOString()
+      };
 
-    if (newContent.sourceType === 'file' && selectedFile) {
-      formData.append('file', selectedFile);
-    } else {
-      formData.append('url', newContent.url);
-    }
-
-    const res = await fetch(getApiUrl('/api/grade-content'), {
-      method: 'POST',
-      body: formData
-    });
-    if (res.ok) {
+      await addDoc(collection(db, 'grade_content'), contentData);
+      
       setShowAddForm(false);
       setNewContent({ title: '', description: '', url: '', type: 'link', sourceType: 'url' });
-      setSelectedFile(null);
-      // Refresh content
-      let url = `/api/grade-content/${selectedGrade}/${selectedCategory}`;
-      const params = new URLSearchParams();
-      if (selectedSection) params.append('section', selectedSection);
-      if (selectedSubject) params.append('subject', selectedSubject);
-      if (params.toString()) url += `?${params.toString()}`;
       
-      fetch(getApiUrl(url))
-        .then(res => res.json())
-        .then(setContent);
+      // Refresh content
+      let q = query(
+        collection(db, 'grade_content'),
+        where('grade', '==', selectedGrade),
+        where('category', '==', selectedCategory)
+      );
+      if (selectedSection) q = query(q, where('section', '==', selectedSection));
+      if (selectedSubject) q = query(q, where('subject', '==', selectedSubject));
+      
+      getDocs(q).then(snap => {
+        setContent(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      });
+    } catch (err) {
+      console.error("Failed to add content", err);
     }
   };
 
@@ -4722,8 +4888,12 @@ const GradesView = ({ user }: { user: User }) => {
                   <button 
                     onClick={async () => {
                       if(window.confirm('هل تريد حذف هذا المحتوى؟')) {
-                        await fetch(getApiUrl(`/api/grade-content/${item.id}`), { method: 'DELETE' });
-                        setContent(content.filter(c => c.id !== item.id));
+                        try {
+                          await deleteDoc(doc(db, 'grade_content', item.id));
+                          setContent(content.filter(c => c.id !== item.id));
+                        } catch (err) {
+                          console.error(err);
+                        }
                       }
                     }}
                     className="text-red-400 hover:text-red-600 dark:hover:text-red-400 p-1"
@@ -4735,7 +4905,7 @@ const GradesView = ({ user }: { user: User }) => {
               <h4 className="font-bold text-lg text-slate-900 dark:text-slate-100 mb-2">{item.title}</h4>
               <p className="text-sm text-slate-500 dark:text-slate-400 mb-6 line-clamp-2">{item.description}</p>
               <a 
-                href={item.url.startsWith('http') ? item.url : getApiUrl(item.url)} 
+                href={item.url} 
                 target="_blank" 
                 rel="noopener noreferrer"
                 className="w-full flex items-center justify-center gap-2 py-3 bg-slate-50 dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 font-bold rounded-2xl hover:bg-indigo-600 hover:text-white transition-all"

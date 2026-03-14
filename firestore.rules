@@ -178,7 +178,22 @@ service cloud.firestore {
 
     match /notifications/{notificationId} {
       allow read: if isAuthenticated() && isOwner(resource.data.userId);
-      allow write: if isAdmin() || isTeacher() || (isAuthenticated() && isOwner(userId));
+      allow write: if isAdmin() || isTeacher() || (isAuthenticated() && isOwner(resource.data.userId));
+    }
+
+    match /badges/{badgeId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /rewards/{rewardId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /grade_content/{contentId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isTeacher();
     }
   }
 }

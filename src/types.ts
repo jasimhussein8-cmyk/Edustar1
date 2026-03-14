@@ -1,7 +1,7 @@
 export type Role = 'admin' | 'teacher' | 'student';
 
 export interface User {
-  id: number;
+  id: string;
   username: string;
   email?: string;
   role: Role;
@@ -12,17 +12,19 @@ export interface User {
   subject?: string; // Legacy
   assigned_subjects?: string[]; // For teachers
   full_name: string;
+  points?: number;
+  coins?: number;
 }
 
 export interface Subject {
-  id: number;
+  id: string;
   name: string;
   grade: string;
 }
 
 export interface Lesson {
-  id: number;
-  subject_id: number;
+  id: string;
+  subject_id: string;
   title: string;
   content: string;
   type: 'video' | 'pdf' | 'text';
@@ -30,15 +32,15 @@ export interface Lesson {
 }
 
 export interface Exam {
-  id: number;
-  subject_id: number;
+  id: string;
+  subject_id: string;
   title: string;
   duration: number;
 }
 
 export interface Question {
-  id: number;
-  exam_id: number;
+  id: string;
+  exam_id: string;
   question_text: string;
   options: string[];
   correct_answer: string;
@@ -46,11 +48,11 @@ export interface Question {
 }
 
 export interface Message {
-  id: number;
-  sender_id: number;
-  receiver_id: number;
+  id: string;
+  sender_id: string;
+  receiver_id: string;
   content: string;
-  created_at: string;
+  created_at: any;
   sender_name?: string;
 }
 
@@ -89,14 +91,14 @@ export interface DailyActivity {
 }
 
 export interface LeaderboardEntry {
-  id: number;
+  id: string;
   full_name: string;
   points: number;
   grade: string;
 }
 
 export interface SubjectProgress {
-  subjectId: number;
+  subjectId: string;
   subjectName: string;
   total: number;
   completed: number;
@@ -104,8 +106,8 @@ export interface SubjectProgress {
 }
 
 export interface Assignment {
-  id: number;
-  subject_id: number;
+  id: string;
+  subject_id: string;
   title: string;
   description: string;
   due_date: string;
@@ -113,9 +115,9 @@ export interface Assignment {
 }
 
 export interface Submission {
-  id: number;
-  assignment_id: number;
-  user_id: number;
+  id: string;
+  assignment_id: string;
+  user_id: string;
   text_entry?: string;
   file_url?: string;
   file_name?: string;
@@ -127,10 +129,10 @@ export interface Submission {
 }
 
 export interface Recommendation {
-  id: number;
-  user_id: number;
+  id: string;
+  user_id: string;
   content_type: 'lesson' | 'exam' | 'subject';
-  content_id: number;
+  content_id: string;
   title: string;
   reason: string;
   priority: 'high' | 'medium' | 'low';
