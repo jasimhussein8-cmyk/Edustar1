@@ -51,6 +51,30 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
 import { getApiUrl } from "./config";
+import { auth, db } from './firebase';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signOut
+} from 'firebase/auth';
+import { 
+  doc, 
+  setDoc, 
+  getDoc, 
+  collection, 
+  query, 
+  where, 
+  getDocs,
+  onSnapshot,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  orderBy,
+  limit,
+  Timestamp,
+  getDocFromServer
+} from 'firebase/firestore';
 import { 
   LineChart, 
   Line, 
@@ -625,60 +649,54 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
     
     const trimmedUsername = username.trim();
     const trimmedPassword = password.trim();
+    const email = `${trimmedUsername}@staredu.com`; // Dummy email for Firebase Auth
 
     if (isRegistering) {
       try {
-        const res = await fetch(getApiUrl('/api/auth/register'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            username: trimmedUsername, 
-            password: trimmedPassword, 
-            full_name: fullName, 
-            grade: role === 'student' ? grade : null,
-            section: role === 'student' ? section : null,
-            assigned_grades: role === 'teacher' ? assignedGrades : null,
-            assigned_sections: role === 'teacher' ? assignedSections : null,
-            assigned_subjects: role === 'teacher' ? assignedSubjects : null,
-            subject: role === 'teacher' ? assignedSubjects[0] : null,
-            role
-          })
-        });
-        const data = await res.json();
-        if (data.success) {
-          // Auto login after register
-          const loginRes = await fetch(getApiUrl('/api/auth/login'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: trimmedUsername, password: trimmedPassword })
-          });
-          const loginData = await loginRes.json();
-          if (loginData.success) {
-            onLogin(loginData.user);
-          }
-        } else {
-          setError(data.message || 'فشل إنشاء الحساب');
-        }
-      } catch (err) {
-        setError('حدث خطأ أثناء التسجيل');
+        // 1. Create user in Firebase Auth
+        const userCredential = await createUserWithEmailAndPassword(auth, email, trimmedPassword);
+        const firebaseUser = userCredential.user;
+
+        // 2. Create user profile in Firestore
+        const userData = { 
+          id: firebaseUser.uid,
+          username: trimmedUsername, 
+          full_name: fullName, 
+          grade: role === 'student' ? grade : null,
+          section: role === 'student' ? section : null,
+          assigned_grades: role === 'teacher' ? assignedGrades : null,
+          assigned_sections: role === 'teacher' ? assignedSections : null,
+          assigned_subjects: role === 'teacher' ? assignedSubjects : null,
+          subject: role === 'teacher' ? assignedSubjects[0] : null,
+          role,
+          points: 0,
+          createdAt: new Date().toISOString()
+        };
+
+        await setDoc(doc(db, 'users', firebaseUser.uid), userData);
+        onLogin(userData as unknown as User);
+      } catch (err: any) {
+        console.error(err);
+        setError(err.message || 'فشل إنشاء الحساب');
       } finally {
         setLoading(false);
       }
     } else {
       try {
-        const res = await fetch(getApiUrl('/api/auth/login'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: trimmedUsername, password: trimmedPassword })
-        });
-        const data = await res.json();
-        if (data.success) {
-          onLogin(data.user);
+        // 1. Login with Firebase Auth
+        const userCredential = await signInWithEmailAndPassword(auth, email, trimmedPassword);
+        const firebaseUser = userCredential.user;
+
+        // 2. Fetch profile from Firestore
+        const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+        if (userDoc.exists()) {
+          onLogin(userDoc.data() as User);
         } else {
-          setError('بيانات الاعتماد غير صالحة');
+          setError('لم يتم العثور على ملف تعريف المستخدم');
         }
-      } catch (err) {
-        setError('حدث خطأ أثناء تسجيل الدخول');
+      } catch (err: any) {
+        console.error(err);
+        setError('بيانات الاعتماد غير صالحة أو حدث خطأ');
       } finally {
         setLoading(false);
       }
@@ -4755,10 +4773,33 @@ export default function App() {
     localStorage.setItem('darkMode', darkMode.toString());
   }, [darkMode]);
 
-  const handleLogout = () => {
-    setUser(null);
-    setActiveTab('dashboard');
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setUser(null);
+      setActiveTab('dashboard');
+    } catch (err) {
+      console.error('Logout error:', err);
+    }
   };
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+          if (userDoc.exists()) {
+            setUser(userDoc.data() as User);
+          }
+        } catch (err) {
+          console.error('Error fetching user profile:', err);
+        }
+      } else {
+        setUser(null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
 
   if (!user) {
     return <LoginView onLogin={setUser} />;

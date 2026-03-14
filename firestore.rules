@@ -1,0 +1,184 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: users
+// Fields:
+//   - username: string (required)
+//   - password: string (required)
+//   - full_name: string (required)
+//   - role: string (required, enum: ['student', 'teacher', 'admin'])
+//   - grade: string (optional)
+//   - section: string (optional)
+//   - assigned_grades: list (optional)
+//   - assigned_sections: list (optional)
+//   - assigned_subjects: list (optional)
+//   - subject: string (optional)
+//   - points: number (optional)
+//   - createdAt: timestamp (optional)
+//
+// Collection: subjects
+// Fields:
+//   - name: string (required)
+//   - grade: string (required)
+//   - image: string (optional)
+//   - description: string (optional)
+//
+// Collection: lessons
+// Fields:
+//   - subjectId: string (required)
+//   - title: string (required)
+//   - content: string (optional)
+//   - videoUrl: string (optional)
+//   - fileUrl: string (optional)
+//   - order: number (optional)
+//
+// Collection: exams
+// Fields:
+//   - subjectId: string (required)
+//   - title: string (required)
+//   - duration: number (required)
+//   - createdAt: timestamp (optional)
+//
+// Collection: questions
+// Fields:
+//   - examId: string (required)
+//   - question_text: string (required)
+//   - options: list (required)
+//   - correct_answer: string (required)
+//   - type: string (required, enum: ['mcq', 'tf', 'short'])
+//
+// Collection: assignments
+// Fields:
+//   - subjectId: string (required)
+//   - title: string (required)
+//   - description: string (optional)
+//   - dueDate: timestamp (optional)
+//   - fileUrl: string (optional)
+//   - teacherId: string (required)
+//
+// Collection: submissions
+// Fields:
+//   - assignmentId: string (required)
+//   - studentId: string (required)
+//   - content: string (optional)
+//   - fileUrl: string (optional)
+//   - submittedAt: timestamp (optional)
+//   - grade: number (optional)
+//   - feedback: string (optional)
+//
+// Collection: exam_results
+// Fields:
+//   - userId: string (required)
+//   - examId: string (required)
+//   - score: number (required)
+//   - total: number (required)
+//   - takenAt: timestamp (optional)
+//
+// Collection: notifications
+// Fields:
+//   - userId: string (required)
+//   - title: string (required)
+//   - message: string (required)
+//   - time: string (optional)
+//   - read: boolean (optional)
+//   - type: string (optional)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "jasimhussein8@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isTeacher() {
+      return isAuthenticated() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher';
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidUrl(url) {
+      return url is string && (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.username is string && data.username.size() > 0 && data.username.size() < 50 &&
+             data.full_name is string && data.full_name.size() > 0 && data.full_name.size() < 100 &&
+             data.role in ['student', 'teacher', 'admin'];
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && (isOwner(userId) || isAdmin());
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && (isOwner(userId) || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /subjects/{subjectId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /lessons/{lessonId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isTeacher();
+    }
+
+    match /exams/{examId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isTeacher();
+    }
+
+    match /questions/{questionId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isTeacher();
+    }
+
+    match /assignments/{assignmentId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || isTeacher();
+    }
+
+    match /submissions/{submissionId} {
+      allow read: if isAuthenticated() && (isOwner(resource.data.studentId) || isTeacher() || isAdmin());
+      allow create: if isAuthenticated() && isOwner(request.resource.data.studentId);
+      allow update: if isAuthenticated() && (isOwner(resource.data.studentId) || isTeacher() || isAdmin());
+    }
+
+    match /exam_results/{resultId} {
+      allow read: if isAuthenticated() && (isOwner(resource.data.userId) || isTeacher() || isAdmin());
+      allow create: if isAuthenticated() && isOwner(request.resource.data.userId);
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && isOwner(resource.data.userId);
+      allow write: if isAdmin() || isTeacher() || (isAuthenticated() && isOwner(userId));
+    }
+  }
+}

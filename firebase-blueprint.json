@@ -1,0 +1,142 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "App user (student, teacher, or admin)",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "password": { "type": "string" },
+        "full_name": { "type": "string" },
+        "role": { "type": "string", "enum": ["student", "teacher", "admin"] },
+        "grade": { "type": "string" },
+        "section": { "type": "string" },
+        "assigned_grades": { "type": "array", "items": { "type": "string" } },
+        "assigned_sections": { "type": "array", "items": { "type": "string" } },
+        "assigned_subjects": { "type": "array", "items": { "type": "string" } },
+        "subject": { "type": "string" },
+        "points": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["username", "password", "full_name", "role"]
+    },
+    "Subject": {
+      "title": "Subject",
+      "description": "Educational subject",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "grade": { "type": "string" },
+        "image": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "required": ["name", "grade"]
+    },
+    "Lesson": {
+      "title": "Lesson",
+      "description": "Lesson content",
+      "type": "object",
+      "properties": {
+        "subjectId": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "videoUrl": { "type": "string" },
+        "fileUrl": { "type": "string" },
+        "order": { "type": "number" }
+      },
+      "required": ["subjectId", "title"]
+    },
+    "Exam": {
+      "title": "Exam",
+      "description": "Assessment exam",
+      "type": "object",
+      "properties": {
+        "subjectId": { "type": "string" },
+        "title": { "type": "string" },
+        "duration": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["subjectId", "title", "duration"]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "Exam question",
+      "type": "object",
+      "properties": {
+        "examId": { "type": "string" },
+        "question_text": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" } },
+        "correct_answer": { "type": "string" },
+        "type": { "type": "string", "enum": ["mcq", "tf", "short"] }
+      },
+      "required": ["examId", "question_text", "correct_answer", "type"]
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "Student assignment",
+      "type": "object",
+      "properties": {
+        "subjectId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "dueDate": { "type": "string", "format": "date-time" },
+        "fileUrl": { "type": "string" },
+        "teacherId": { "type": "string" }
+      },
+      "required": ["subjectId", "title", "teacherId"]
+    },
+    "Submission": {
+      "title": "Submission",
+      "description": "Assignment submission",
+      "type": "object",
+      "properties": {
+        "assignmentId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "content": { "type": "string" },
+        "fileUrl": { "type": "string" },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "grade": { "type": "number" },
+        "feedback": { "type": "string" }
+      },
+      "required": ["assignmentId", "studentId"]
+    },
+    "ExamResult": {
+      "title": "ExamResult",
+      "description": "Result of an exam",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "examId": { "type": "string" },
+        "score": { "type": "number" },
+        "total": { "type": "number" },
+        "takenAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "examId", "score", "total"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "User notification",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "time": { "type": "string" },
+        "read": { "type": "boolean" },
+        "type": { "type": "string" }
+      },
+      "required": ["userId", "title", "message"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": { "schema": "User", "description": "User profiles" },
+    "/subjects/{subjectId}": { "schema": "Subject", "description": "Subject list" },
+    "/lessons/{lessonId}": { "schema": "Lesson", "description": "Lesson content" },
+    "/exams/{examId}": { "schema": "Exam", "description": "Exams" },
+    "/questions/{questionId}": { "schema": "Question", "description": "Questions for exams" },
+    "/assignments/{assignmentId}": { "schema": "Assignment", "description": "Assignments" },
+    "/submissions/{submissionId}": { "schema": "Submission", "description": "Assignment submissions" },
+    "/exam_results/{resultId}": { "schema": "ExamResult", "description": "Exam results" },
+    "/notifications/{notificationId}": { "schema": "Notification", "description": "User notifications" }
+  }
+}
