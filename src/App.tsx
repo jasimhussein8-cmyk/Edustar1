@@ -696,7 +696,12 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
         }
       } catch (err: any) {
         console.error(err);
-        setError('بيانات الاعتماد غير صالحة أو حدث خطأ');
+        let msg = 'بيانات الاعتماد غير صالحة أو حدث خطأ';
+        if (err.code === 'auth/user-not-found') msg = 'هذا الحساب غير موجود، يرجى إنشاء حساب أولاً';
+        if (err.code === 'auth/wrong-password') msg = 'كلمة المرور غير صحيحة';
+        if (err.code === 'auth/invalid-email') msg = 'اسم المستخدم غير صالح';
+        if (err.code === 'auth/operation-not-allowed') msg = 'خطأ: خدمة تسجيل الدخول غير مفعلة في Firebase. يرجى تفعيل (Email/Password) من لوحة تحكم Firebase (Authentication > Sign-in method).';
+        setError(msg);
       } finally {
         setLoading(false);
       }
@@ -764,6 +769,13 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
                   className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${role === 'teacher' ? 'bg-white dark:bg-slate-700 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500'}`}
                 >
                   معلم
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRole('admin')}
+                  className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${role === 'admin' ? 'bg-white dark:bg-slate-700 shadow-sm text-indigo-600 dark:text-indigo-400' : 'text-slate-500'}`}
+                >
+                  مسؤول
                 </button>
               </div>
               <div>
