@@ -1,0 +1,8 @@
+{
+  "name": "احدث  مدرسة",
+  "description": "A comprehensive educational platform for students from 5th primary to 6th secondary, featuring exams, real-time chat, and administrative controls.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
