@@ -9,7 +9,30 @@
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <div id="error-display" style="display:none; color:red; padding:20px; font-family:sans-serif; direction:ltr; text-align:left;">
+      <h3>Runtime Error Detected:</h3>
+      <pre id="error-message"></pre>
+    </div>
+    <script>
+      window.onerror = function(msg, url, line, col, error) {
+        var display = document.getElementById('error-display');
+        var message = document.getElementById('error-message');
+        if (display && message) {
+          display.style.display = 'block';
+          message.textContent = msg + '\nAt: ' + url + ':' + line + ':' + col;
+        }
+        return false;
+      };
+      window.onunhandledrejection = function(event) {
+        var display = document.getElementById('error-display');
+        var message = document.getElementById('error-message');
+        if (display && message) {
+          display.style.display = 'block';
+          message.textContent = 'Unhandled Rejection: ' + event.reason;
+        }
+      };
+    </script>
+    <script type="module" src="src/main.tsx"></script>
   </body>
 </html>
 

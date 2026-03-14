@@ -4757,9 +4757,13 @@ export default function App() {
     { id: 3, title: 'تقييم الواجب', message: 'تم تقييم واجب الرياضيات الخاص بك. الدرجة: 95/100', time: 'منذ ساعتين', read: true, type: 'grade' },
   ]);
   const [darkMode, setDarkMode] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('darkMode') === 'true' || 
-             window.matchMedia('(prefers-color-scheme: dark)').matches;
+    try {
+      if (typeof window !== 'undefined') {
+        return localStorage.getItem('darkMode') === 'true' || 
+               window.matchMedia('(prefers-color-scheme: dark)').matches;
+      }
+    } catch (e) {
+      console.error('LocalStorage access failed:', e);
     }
     return false;
   });
@@ -4770,7 +4774,11 @@ export default function App() {
     } else {
       document.documentElement.classList.remove('dark');
     }
-    localStorage.setItem('darkMode', darkMode.toString());
+    try {
+      localStorage.setItem('darkMode', darkMode.toString());
+    } catch (e) {
+      console.error('LocalStorage write failed:', e);
+    }
   }, [darkMode]);
 
   const handleLogout = async () => {
