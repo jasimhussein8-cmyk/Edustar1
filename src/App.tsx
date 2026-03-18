@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { Component, useState, useEffect, useRef, useMemo } from 'react';
 import { 
   BookOpen, 
   GraduationCap, 
@@ -46,19 +46,19 @@ import {
   Filter,
   MoreHorizontal,
   StickyNote,
+  ExternalLink,
   User as UserIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
 // import { getApiUrl } from "./config";
-import { auth, db } from './firebase';
 import { 
+  auth, 
+  db,
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword,
   onAuthStateChanged,
-  signOut
-} from 'firebase/auth';
-import { 
+  signOut,
   doc, 
   setDoc, 
   getDoc, 
@@ -73,8 +73,9 @@ import {
   orderBy,
   limit,
   Timestamp,
-  getDocFromServer
-} from 'firebase/firestore';
+  getDocFromServer,
+  uploadFile
+} from './firebase';
 import { 
   LineChart, 
   Line, 
@@ -89,6 +90,59 @@ import {
   Bar
 } from 'recharts';
 import { User, Subject, Lesson, Exam, Question, Message, Role, UserStats, LeaderboardEntry, SubjectProgress, Assignment, Submission, Recommendation, Reward } from './types';
+import { getDocFromServer as testGetDocFromServer } from 'firebase/firestore';
+
+// --- Error Boundary ---
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: any;
+}
+
+export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950 p-4">
+          <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl shadow-xl border border-red-100 dark:border-red-900/30 max-w-md w-full text-center">
+            <div className="w-16 h-16 bg-red-50 dark:bg-red-900/20 rounded-full flex items-center justify-center text-red-600 dark:text-red-400 mx-auto mb-4">
+              <XCircle size={32} />
+            </div>
+            <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100 mb-2">عذراً، حدث خطأ ما</h2>
+            <p className="text-slate-600 dark:text-slate-400 text-sm mb-6">
+              لقد واجهنا مشكلة غير متوقعة. يرجى محاولة إعادة تحميل الصفحة.
+            </p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all"
+            >
+              إعادة تحميل الصفحة
+            </button>
+            {process.env.NODE_ENV === 'development' && (
+              <pre className="mt-4 p-4 bg-slate-100 dark:bg-slate-800 rounded-lg text-left text-[10px] overflow-auto max-h-40 text-red-600">
+                {this.state.error?.message || String(this.state.error)}
+              </pre>
+            )}
+          </div>
+        </div>
+      );
+    }
+    return (this as any).props.children;
+  }
+}
 
 // --- Components ---
 
@@ -106,7 +160,13 @@ const StudyAssistant = ({ user, context }: { user: User, context?: string }) => 
     setLoading(true);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        setChat(prev => [...prev, { role: 'ai', text: 'عذراً، مفتاح API للذكاء الاصطناعي غير متوفر حالياً. يرجى المحاولة لاحقاً.' }]);
+        setLoading(false);
+        return;
+      }
+      const ai = new GoogleGenAI({ apiKey });
       const model = ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: [
@@ -250,6 +310,35 @@ const Navbar = ({ user, onLogout }: { user: User; onLogout: () => void }) => (
   </nav>
 );
 
+const DownloadAppButton = () => {
+  const [downloadUrl, setDownloadUrl] = useState('');
+
+  useEffect(() => {
+    const fetchConfig = async () => {
+      const docRef = doc(db, 'app_config', 'latest');
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const data = docSnap.data() as any;
+        setDownloadUrl(data.download_url || '');
+      }
+    };
+    fetchConfig();
+  }, []);
+
+  if (!downloadUrl) return null;
+
+  return (
+    <a 
+      href={downloadUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="w-full flex items-center justify-center gap-2 py-3 bg-indigo-600 text-white rounded-2xl text-xs font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 dark:shadow-indigo-900/20 mt-4"
+    >
+      <Download size={18} /> تحميل التطبيق
+    </a>
+  );
+};
+
 const Sidebar = ({ activeTab, setActiveTab, user }: { activeTab: string; setActiveTab: (t: string) => void; user: User }) => {
   const menuItems = [
     { id: 'dashboard', label: 'لوحة التحكم', icon: LayoutDashboard, roles: ['student', 'teacher', 'admin'] },
@@ -271,6 +360,7 @@ const Sidebar = ({ activeTab, setActiveTab, user }: { activeTab: string; setActi
     { id: 'settings', label: 'الإعدادات', icon: Settings, roles: ['student', 'teacher', 'admin'] },
     { id: 'users', label: 'إدارة المستخدمين', icon: Users, roles: ['admin'] },
     { id: 'curriculum', label: 'المناهج الدراسية', icon: Settings, roles: ['admin', 'teacher'] },
+    { id: 'updates', label: 'إدارة التحديثات', icon: Download, roles: ['admin'] },
   ];
 
   const filteredMenuItems = menuItems.filter(item => {
@@ -293,6 +383,7 @@ const Sidebar = ({ activeTab, setActiveTab, user }: { activeTab: string; setActi
           </button>
         ))}
       </div>
+      <DownloadAppButton />
       <div className="absolute bottom-4 left-4 right-4 p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-100 dark:border-slate-800">
         <p className="text-[10px] text-slate-400 dark:text-slate-500 text-center">بإشراف</p>
         <p className="text-xs font-bold text-slate-600 dark:text-slate-300 text-center mt-1">شلال تاشي</p>
@@ -317,6 +408,7 @@ const BottomNav = ({ activeTab, setActiveTab, user }: { activeTab: string; setAc
     { id: 'users', label: 'المستخدمين', icon: Users, roles: ['admin'] },
     { id: 'grades', label: 'الصفوف', icon: GraduationCap, roles: ['admin'] },
     { id: 'curriculum', label: 'المناهج', icon: Settings, roles: ['admin', 'teacher'] },
+    { id: 'updates', label: 'التحديثات', icon: Download, roles: ['admin'] },
   ];
 
   const items = user.role === 'admin' ? adminItems : menuItems.filter(item => item.roles.includes(user.role));
@@ -457,8 +549,8 @@ const AssignmentsView = ({ user }: { user: User }) => {
         getDocs(submissionsQuery)
       ]);
       
-      const assignmentsData = assignmentsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Assignment));
-      const submissionsData = submissionsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Submission));
+      const assignmentsData = assignmentsSnap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Assignment));
+      const submissionsData = submissionsSnap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Submission));
       
       setAssignments(assignmentsData);
       setSubmissions(submissionsData);
@@ -647,14 +739,43 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
     'التربية الإسلامية'
   ];
 
+  const [rememberMe, setRememberMe] = useState(() => {
+    try {
+      return localStorage.getItem('rememberMe') === 'true';
+    } catch (e) {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    if (rememberMe) {
+      try {
+        const savedUsername = localStorage.getItem('savedUsername');
+        if (savedUsername) setUsername(savedUsername);
+      } catch (e) {}
+    }
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
     
-    const trimmedUsername = username.trim();
+    const trimmedUsername = username.trim().toLowerCase();
     const trimmedPassword = password.trim();
     const email = `${trimmedUsername}@staredu.com`; // Dummy email for Firebase Auth
+
+    if (rememberMe) {
+      try {
+        localStorage.setItem('savedUsername', trimmedUsername);
+        localStorage.setItem('rememberMe', 'true');
+      } catch (e) {}
+    } else {
+      try {
+        localStorage.removeItem('savedUsername');
+        localStorage.setItem('rememberMe', 'false');
+      } catch (e) {}
+    }
 
     if (isRegistering) {
       try {
@@ -682,7 +803,19 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
         onLogin(userData as unknown as User);
       } catch (err: any) {
         console.error(err);
-        setError(err.message || 'فشل إنشاء الحساب');
+        let msg = err.message || 'فشل إنشاء الحساب';
+        if (err.code === 'auth/email-already-in-use') msg = 'هذا المستخدم موجود بالفعل، يرجى تسجيل الدخول بدلاً من ذلك.';
+        if (err.code === 'auth/weak-password') msg = 'كلمة المرور ضعيفة جداً، يرجى اختيار كلمة مرور أقوى.';
+        if (err.code === 'auth/operation-not-allowed') msg = 'خطأ: خدمة إنشاء الحساب غير مفعلة في Firebase. يرجى تفعيل (Email/Password) من لوحة تحكم Firebase (Authentication > Sign-in method).';
+        if (err.code === 'auth/network-request-failed') {
+          msg = `فشل الاتصال بالشبكة أثناء إنشاء الحساب. يرجى تجربة الحلول التالية:
+          1. افتح التطبيق في "نافذة جديدة" (New Tab) بدلاً من المعاينة الداخلية.
+          2. تأكد من إيقاف أي إضافات مانعة للإعلانات (AdBlock) أو VPN.
+          3. تأكد من إضافة النطاقات التالية في Firebase (Authorized Domains):
+             - ais-dev-awakvcfp3fxe76fgpl75fi-174814313555.europe-west2.run.app
+             - ais-pre-awakvcfp3fxe76fgpl75fi-174814313555.europe-west2.run.app`;
+        }
+        setError(msg);
       } finally {
         setLoading(false);
       }
@@ -695,7 +828,7 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
         // 2. Fetch profile from Firestore
         const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
         if (userDoc.exists()) {
-          onLogin(userDoc.data() as User);
+          onLogin({ id: userDoc.id, ...(userDoc.data() as any) } as User);
         } else {
           setError('لم يتم العثور على ملف تعريف المستخدم');
         }
@@ -706,7 +839,14 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
         if (err.code === 'auth/user-not-found') msg = 'هذا الحساب غير موجود، يرجى إنشاء حساب أولاً من خلال تبويب "إنشاء حساب جديد".';
         if (err.code === 'auth/invalid-email') msg = 'اسم المستخدم غير صالح';
         if (err.code === 'auth/operation-not-allowed') msg = 'خطأ: خدمة تسجيل الدخول غير مفعلة في Firebase. يرجى تفعيل (Email/Password) من لوحة تحكم Firebase (Authentication > Sign-in method).';
-        if (err.code === 'auth/network-request-failed') msg = 'فشل الاتصال بالشبكة. يرجى التأكد من اتصال الإنترنت، وإضافة رابط الموقع (مثل github.io و run.app) إلى (Authorized Domains) في لوحة تحكم Firebase (Authentication > Settings).';
+        if (err.code === 'auth/network-request-failed') {
+          msg = `فشل الاتصال بالشبكة أثناء تسجيل الدخول. يرجى تجربة الحلول التالية:
+          1. افتح التطبيق في "نافذة جديدة" (New Tab) بدلاً من المعاينة الداخلية.
+          2. تأكد من إيقاف أي إضافات مانعة للإعلانات (AdBlock) أو VPN.
+          3. تأكد من إضافة النطاقات التالية في Firebase (Authorized Domains):
+             - ais-dev-awakvcfp3fxe76fgpl75fi-174814313555.europe-west2.run.app
+             - ais-pre-awakvcfp3fxe76fgpl75fi-174814313555.europe-west2.run.app`;
+        }
         setError(msg);
       } finally {
         setLoading(false);
@@ -900,7 +1040,23 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
             </>
           )}
           {error && <p className="text-red-500 dark:text-red-400 text-sm">{error}</p>}
-          <button type="submit" disabled={loading} className="w-full btn-primary mt-4 disabled:opacity-50">
+          
+          <div className="flex items-center justify-between py-2">
+            <label className="flex items-center gap-2 cursor-pointer group">
+              <div className={`w-5 h-5 rounded-md border flex items-center justify-center transition-all ${rememberMe ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'}`}>
+                {rememberMe && <CheckCircle2 size={14} />}
+              </div>
+              <input 
+                type="checkbox" 
+                className="hidden" 
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+              />
+              <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">تذكرني</span>
+            </label>
+          </div>
+
+          <button type="submit" disabled={loading} className="w-full btn-primary mt-2 disabled:opacity-50">
             {loading ? 'جاري المعالجة...' : (isRegistering ? 'إنشاء حساب' : 'تسجيل الدخول')}
           </button>
         </form>
@@ -931,7 +1087,7 @@ const PaymentView = ({ user }: { user: User }) => {
     try {
       const q = query(collection(db, 'payments'), where('userId', '==', user.id), orderBy('createdAt', 'desc'));
       const snap = await getDocs(q);
-      setHistory(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setHistory(snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) })));
     } catch (err) {
       console.error("Failed to fetch payment history", err);
     }
@@ -1087,10 +1243,7 @@ const GoogleDrivePicker = ({ user, onSelect }: { user: User; onSelect: (file: an
     setLoading(true);
     setError(null);
     try {
-      // Google Drive integration disabled in static mode
-      setError('ميزة Google Drive تتطلب خادم خلفي وهي غير متوفرة في النسخة الثابتة حالياً.');
-      /*
-      const res = await fetch(getApiUrl(`/api/google/drive/files?userId=${user.id}`));
+      const res = await fetch(`/api/google/drive/files?userId=${user.id}`);
       if (res.ok) {
         const data = await res.json();
         setFiles(data);
@@ -1098,7 +1251,6 @@ const GoogleDrivePicker = ({ user, onSelect }: { user: User; onSelect: (file: an
         const err = await res.json();
         setError(err.error || 'Failed to fetch files');
       }
-      */
     } catch (err) {
       setError('Connection error');
     } finally {
@@ -1108,12 +1260,9 @@ const GoogleDrivePicker = ({ user, onSelect }: { user: User; onSelect: (file: an
 
   const handleConnect = async () => {
     try {
-      alert('ميزة Google Drive تتطلب خادم خلفي وهي غير متوفرة في النسخة الثابتة حالياً.');
-      /*
-      const res = await fetch(getApiUrl('/api/auth/google/drive/url'));
+      const res = await fetch('/api/auth/google/drive/url');
       const { url } = await res.json();
       window.open(url, 'google_drive_auth', 'width=600,height=700');
-      */
     } catch (err) {
       console.error(err);
     }
@@ -1246,7 +1395,7 @@ const SettingsView = ({ user }: { user: User }) => {
   );
 };
 
-const ProfileView = ({ user }: { user: User }) => {
+const ProfileView = ({ user, setActiveTab }: { user: User, setActiveTab: (t: string) => void }) => {
   return (
     <div className="max-w-4xl mx-auto py-8">
       <div className="bg-white dark:bg-slate-900 rounded-[3rem] border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm transition-colors duration-300">
@@ -1273,7 +1422,10 @@ const ProfileView = ({ user }: { user: User }) => {
                 </span>
               </div>
             </div>
-            <button className="btn-secondary flex items-center gap-2">
+            <button 
+              onClick={() => setActiveTab('settings')}
+              className="btn-secondary flex items-center gap-2"
+            >
               <Settings size={18} /> تعديل الملف الشخصي
             </button>
           </div>
@@ -1292,6 +1444,35 @@ const ProfileView = ({ user }: { user: User }) => {
               <p className="text-lg font-bold text-slate-900 dark:text-slate-100">124 درس</p>
             </div>
           </div>
+
+          <div className="mt-12">
+            <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100 mb-6">الحسابات المرتبطة</h3>
+            <div className="p-6 bg-white dark:bg-slate-800 rounded-3xl border border-slate-200 dark:border-slate-700 flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 bg-blue-500 rounded-2xl flex items-center justify-center text-white">
+                  <Link size={24} />
+                </div>
+                <div>
+                  <h4 className="font-bold text-slate-900 dark:text-slate-100">Google Drive</h4>
+                  <p className="text-xs text-slate-500">للوصول السريع إلى ملفاتك ومشاركتها في الدروس.</p>
+                </div>
+              </div>
+              <button 
+                onClick={async () => {
+                  try {
+                    const res = await fetch('/api/auth/google/drive/url');
+                    const { url } = await res.json();
+                    window.open(url, 'google_drive_auth', 'width=600,height=700');
+                  } catch (err) {
+                    console.error(err);
+                  }
+                }}
+                className="px-6 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition-all"
+              >
+                ربط الحساب
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1304,7 +1485,7 @@ const GradeContentWidget = ({ grade }: { grade: string }) => {
   useEffect(() => {
     const q = query(collection(db, 'grade_content'), where('grade', '==', grade));
     getDocs(q).then(snap => {
-      setContent(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setContent(snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) })));
     });
   }, [grade]);
 
@@ -1532,8 +1713,8 @@ const RewardsStore = ({ user, stats, onPurchase }: { user: User, stats: UserStat
         const userRewardsQuery = query(collection(db, 'user_rewards'), where('userId', '==', user.id));
         const userRewardsSnap = await getDocs(userRewardsQuery);
         
-        setRewards(rewardsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Reward)));
-        setPurchasedRewards(userRewardsSnap.docs.map(doc => doc.data().rewardId));
+        setRewards(rewardsSnap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Reward)));
+        setPurchasedRewards(userRewardsSnap.docs.map(doc => (doc.data() as any).rewardId));
         setLoading(false);
       } catch (err) {
         console.error(err);
@@ -1667,6 +1848,7 @@ const StudentDashboard = ({ user, setActiveTab }: { user: User, setActiveTab: (t
   ];
 
   const fetchData = async () => {
+    if (!user || !user.id) return;
     try {
       const subjectsQuery = query(collection(db, 'subjects'), where('grade', '==', user.grade));
       const progressQuery = query(collection(db, 'progress'), where('userId', '==', user.id));
@@ -1680,17 +1862,30 @@ const StudentDashboard = ({ user, setActiveTab }: { user: User, setActiveTab: (t
         getDocs(favsQuery)
       ]);
       
-      setSubjects(subjectsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Subject)));
-      setProgress(progressSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-      setRecommendations(recsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-      setFavoriteLessons(favsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setSubjects(subjectsSnap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Subject)));
+      setProgress(progressSnap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) })));
+      setRecommendations(recsSnap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) })));
+      setFavoriteLessons(favsSnap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) })));
       
       // Stats come from the user object itself
       setStats({
         points: user.points || 0,
-        rank: 0, // Need leaderboard for this
-        badges: 0,
-        streak: 0
+        coins: user.coins || 0,
+        badges: [],
+        lessonsCompleted: 0,
+        streak: 0,
+        level: Math.floor((user.points || 0) / 1000) + 1,
+        xp: (user.points || 0) % 1000,
+        nextLevelXp: 1000,
+        weeklyActivity: [
+          { day: 'الأحد', count: 0 },
+          { day: 'الاثنين', count: 0 },
+          { day: 'الثلاثاء', count: 0 },
+          { day: 'الأربعاء', count: 0 },
+          { day: 'الخميس', count: 0 },
+          { day: 'الجمعة', count: 0 },
+          { day: 'السبت', count: 0 },
+        ]
       });
       
       setLoading(false);
@@ -1827,7 +2022,7 @@ const StudentDashboard = ({ user, setActiveTab }: { user: User, setActiveTab: (t
             </div>
             <span className="text-xs font-bold uppercase tracking-wider opacity-80">الأوسمة</span>
           </div>
-          <div className="text-4xl font-bold">{stats?.badges.length || 0}</div>
+          <div className="text-4xl font-bold">{(stats?.badges || []).length}</div>
           <p className="text-sm mt-2 opacity-80">أوسمة الإنجاز الخاصة بك</p>
         </div>
 
@@ -2034,6 +2229,13 @@ const StudentDashboard = ({ user, setActiveTab }: { user: User, setActiveTab: (t
           </section>
 
           {stats && <RewardsStore user={user} stats={stats} onPurchase={fetchData} />}
+          
+          <GoogleDrivePicker 
+            user={user} 
+            onSelect={(file) => {
+              window.open(file.webViewLink, '_blank');
+            }} 
+          />
         </div>
 
         <div className="space-y-8">
@@ -2130,14 +2332,14 @@ const StudentDashboard = ({ user, setActiveTab }: { user: User, setActiveTab: (t
             <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 mb-6 flex items-center gap-2">
               <Award className="text-amber-500" size={20} /> أوسمتك
             </h3>
-            {stats?.badges.length === 0 ? (
+            {(stats?.badges || []).length === 0 ? (
               <div className="text-center py-8">
                 <Award size={48} className="mx-auto text-slate-200 dark:text-slate-700 mb-2" />
                 <p className="text-sm text-slate-500 dark:text-slate-400">لم تحصل على أوسمة بعد. ابدأ التعلم الآن!</p>
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-4">
-                {stats?.badges.map((badge) => (
+                {(stats?.badges || []).map((badge) => (
                   <div key={badge.id} className="flex flex-col items-center text-center p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-100 dark:border-slate-700">
                     <div className="w-12 h-12 bg-white dark:bg-slate-800 rounded-full shadow-sm flex items-center justify-center text-amber-500 mb-2">
                       {badge.icon === 'Star' ? <Star size={24} fill="currentColor" /> : 
@@ -2266,13 +2468,16 @@ const LeaderboardView = ({ user }: { user: User }) => {
     );
     
     getDocs(q).then(snap => {
-      setLeaderboard(snap.docs.map((doc, index) => ({
-        id: doc.id,
-        full_name: doc.data().full_name,
-        points: doc.data().points || 0,
-        rank: index + 1,
-        role: doc.data().role
-      })));
+      setLeaderboard(snap.docs.map((doc, index) => {
+        const d = doc.data() as any;
+        return {
+          id: doc.id,
+          full_name: d.full_name,
+          points: d.points || 0,
+          rank: index + 1,
+          role: d.role
+        };
+      }));
       setLoading(false);
     }).catch(err => {
       console.error("Failed to fetch leaderboard", err);
@@ -2454,7 +2659,7 @@ const ChatView = ({ user }: { user: User }) => {
     );
     
     const unsubscribe = onSnapshot(q, (snap) => {
-      setMessages(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Message)));
+      setMessages(snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Message)));
     });
     
     return () => unsubscribe();
@@ -2536,7 +2741,7 @@ const ExamView = ({ user, exam, onComplete, onCancel }: { user: User, exam: Exam
   useEffect(() => {
     const q = query(collection(db, 'questions'), where('examId', '==', exam.id));
     getDocs(q).then(snap => {
-      setQuestions(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Question)));
+      setQuestions(snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Question)));
       setLoading(false);
     });
   }, [exam.id]);
@@ -2682,7 +2887,7 @@ const SubjectDetailView = ({ user, subject, onBack }: { user: User, subject: Sub
   useEffect(() => {
     const q = query(collection(db, 'favorites'), where('userId', '==', user.id));
     getDocs(q).then(snap => {
-      setFavorites(snap.docs.map(doc => doc.data().lessonId));
+      setFavorites(snap.docs.map(doc => (doc.data() as any).lessonId));
     });
   }, [user.id]);
 
@@ -2719,8 +2924,8 @@ const SubjectDetailView = ({ user, subject, onBack }: { user: User, subject: Sub
           getDocs(examsQuery)
         ]);
         
-        setLessons(lessonsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Lesson)));
-        setExams(examsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Exam)));
+        setLessons(lessonsSnap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Lesson)));
+        setExams(examsSnap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Exam)));
         setLoading(false);
       } catch (err) {
         console.error(err);
@@ -2734,7 +2939,7 @@ const SubjectDetailView = ({ user, subject, onBack }: { user: User, subject: Sub
     if (selectedLesson) {
       const q = query(collection(db, 'notes'), where('userId', '==', user.id), where('lessonId', '==', selectedLesson.id));
       getDocs(q).then(snap => {
-        if (!snap.empty) setNote(snap.docs[0].data().content);
+        if (!snap.empty) setNote((snap.docs[0].data() as any).content);
         else setNote('');
       });
     }
@@ -2967,7 +3172,7 @@ const SubjectsView = ({ user }: { user: User }) => {
   useEffect(() => {
     const q = query(collection(db, 'subjects'), where('grade', '==', user.grade));
     getDocs(q).then(snap => {
-      setSubjects(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Subject)));
+      setSubjects(snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Subject)));
       setLoading(false);
     });
   }, [user.grade]);
@@ -3030,7 +3235,213 @@ const SubjectsView = ({ user }: { user: User }) => {
   );
 };
 
-const AdminUsersView = () => {
+const CURRENT_VERSION = '1.0.5';
+
+const AdminUpdatesView = () => {
+  const [latestVersion, setLatestVersion] = useState(CURRENT_VERSION);
+  const [downloadUrl, setDownloadUrl] = useState('');
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+
+  useEffect(() => {
+    const fetchConfig = async () => {
+      const docRef = doc(db, 'app_config', 'latest');
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const data = docSnap.data() as any;
+        setLatestVersion(data.version);
+        setDownloadUrl(data.download_url || '');
+      }
+    };
+    fetchConfig();
+  }, []);
+
+  const handlePublish = async () => {
+    setIsUpdating(true);
+    try {
+      let finalUrl = downloadUrl;
+
+      if (selectedFile) {
+        const path = `updates/${selectedFile.name}_${Date.now()}`;
+        finalUrl = await uploadFile(path, selectedFile);
+      }
+
+      await setDoc(doc(db, 'app_config', 'latest'), {
+        version: latestVersion,
+        download_url: finalUrl,
+        updated_at: new Date().toISOString(),
+      });
+      alert('تم نشر التحديث بنجاح!');
+      setDownloadUrl(finalUrl);
+      setSelectedFile(null);
+    } catch (err) {
+      console.error(err);
+      alert('فشل نشر التحديث.');
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto py-8">
+      <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-8 border border-slate-200 dark:border-slate-800 shadow-sm">
+        <div className="flex items-center gap-4 mb-8">
+          <div className="w-12 h-12 bg-indigo-100 dark:bg-indigo-900/20 rounded-2xl flex items-center justify-center text-indigo-600 dark:text-indigo-400">
+            <Download size={24} />
+          </div>
+          <div>
+            <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">إدارة التحديثات</h2>
+            <p className="text-sm text-slate-500">تحكم في إصدار التطبيق وملفات التحميل.</p>
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          <div className="p-6 bg-slate-50 dark:bg-slate-800/50 rounded-3xl border border-slate-100 dark:border-slate-700">
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-sm font-bold text-slate-700 dark:text-slate-300">الإصدار الحالي للنظام</span>
+              <span className="px-3 py-1 bg-indigo-600 text-white rounded-lg text-xs font-bold">{CURRENT_VERSION}</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-2">رقم الإصدار الجديد</label>
+                <input 
+                  type="text"
+                  value={latestVersion}
+                  onChange={(e) => setLatestVersion(e.target.value)}
+                  className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="مثال: 1.0.6"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-500 mb-2">رابط التحميل (اختياري)</label>
+                <input 
+                  type="text"
+                  value={downloadUrl}
+                  onChange={(e) => setDownloadUrl(e.target.value)}
+                  className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="https://..."
+                />
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <label className="block text-xs font-bold text-slate-500 mb-2">أو ارفع ملف التطبيق (APK/IPA)</label>
+              <div className="flex items-center gap-4">
+                <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-2xl p-6 cursor-pointer hover:border-indigo-500 transition-all">
+                  <Upload className="text-slate-400 mb-2" size={24} />
+                  <span className="text-xs text-slate-500">{selectedFile ? selectedFile.name : 'اسحب الملف هنا أو اضغط للاختيار'}</span>
+                  <input 
+                    type="file" 
+                    className="hidden" 
+                    onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                  />
+                </label>
+                {selectedFile && (
+                  <button 
+                    onClick={() => setSelectedFile(null)}
+                    className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/10 rounded-xl"
+                  >
+                    <X size={20} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end">
+              <button 
+                onClick={handlePublish}
+                disabled={isUpdating}
+                className="btn-primary flex items-center gap-2"
+              >
+                {isUpdating ? 'جاري النشر والرفع...' : 'نشر التحديث'}
+                <Upload size={18} />
+              </button>
+            </div>
+          </div>
+
+          <div className="p-6 bg-emerald-50 dark:bg-emerald-900/10 rounded-3xl border border-emerald-100 dark:border-emerald-800">
+            <h3 className="text-sm font-bold text-emerald-700 dark:text-emerald-400 mb-2">كيف يعمل التحديث؟</h3>
+            <ul className="text-xs text-emerald-600 dark:text-emerald-500 space-y-2 list-disc list-inside">
+              <li>عند نشر إصدار جديد، سيظهر تنبيه لجميع المستخدمين (طلاب ومعلمين).</li>
+              <li>يمكن للمستخدمين الضغط على التنبيه لتحميل النسخة الجديدة أو تحديث الصفحة.</li>
+              <li>تأكد من صحة رابط التحميل قبل النشر.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const UpdateBanner = () => {
+  const [latestVersion, setLatestVersion] = useState(CURRENT_VERSION);
+  const [downloadUrl, setDownloadUrl] = useState('');
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    const fetchConfig = async () => {
+      const docRef = doc(db, 'app_config', 'latest');
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const data = docSnap.data() as any;
+        if (data.version !== CURRENT_VERSION) {
+          setLatestVersion(data.version);
+          setDownloadUrl(data.download_url || '');
+          setShow(true);
+        }
+      }
+    };
+    fetchConfig();
+  }, []);
+
+  if (!show) return null;
+
+  return (
+    <motion.div 
+      initial={{ y: -100 }}
+      animate={{ y: 0 }}
+      className="fixed top-20 left-4 right-4 z-[100] bg-indigo-600 text-white p-4 rounded-2xl shadow-2xl flex items-center justify-between gap-4 border border-white/20 backdrop-blur-lg"
+    >
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+          <Download size={20} />
+        </div>
+        <div>
+          <h4 className="text-sm font-bold">تحديث جديد متاح ({latestVersion})</h4>
+          <p className="text-[10px] opacity-80">يرجى تحديث التطبيق للحصول على آخر الميزات.</p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        {downloadUrl ? (
+          <a 
+            href={downloadUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-4 py-2 bg-white text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-50 transition-all"
+          >
+            تحميل الآن
+          </a>
+        ) : (
+          <button 
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-white text-indigo-600 rounded-xl text-xs font-bold hover:bg-indigo-50 transition-all"
+          >
+            تحديث الصفحة
+          </button>
+        )}
+        <button 
+          onClick={() => setShow(false)}
+          className="p-2 hover:bg-white/10 rounded-xl transition-all"
+        >
+          <X size={16} />
+        </button>
+      </div>
+    </motion.div>
+  );
+};
+
+const AdminUsersView = ({ currentUser }: { currentUser: User }) => {
   const [users, setUsers] = useState<User[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
@@ -3074,7 +3485,7 @@ const AdminUsersView = () => {
   const fetchUsers = async () => {
     try {
       const snap = await getDocs(collection(db, 'users'));
-      setUsers(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as User)));
+      setUsers(snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as User)));
     } catch (err) {
       console.error("Failed to fetch users", err);
     }
@@ -3085,12 +3496,17 @@ const AdminUsersView = () => {
   }, []);
 
   const handleDelete = async (id: string) => {
+    if (id === currentUser.id) {
+      alert('لا يمكنك حذف حسابك الخاص!');
+      return;
+    }
     if (window.confirm('هل أنت متأكد من حذف هذا المستخدم؟')) {
       try {
         await deleteDoc(doc(db, 'users', id));
         fetchUsers();
       } catch (err) {
         console.error("Failed to delete user", err);
+        alert('فشل حذف المستخدم. تأكد من صلاحياتك.');
       }
     }
   };
@@ -3383,8 +3799,8 @@ const ExamTakingView = ({ exam, user, onComplete }: { exam: Exam, user: User, on
         const d = doc.data();
         return {
           id: doc.id,
-          ...d,
-          options: typeof d.options === 'string' ? JSON.parse(d.options) : d.options
+          ...(d as any),
+          options: typeof (d as any).options === 'string' ? JSON.parse((d as any).options) : (d as any).options
         } as unknown as Question;
       });
       setQuestions(data);
@@ -3589,7 +4005,7 @@ const ExamsView = ({ user }: { user: User }) => {
     setLoading(true);
     const q = query(collection(db, 'exams'), where('grade', '==', user.grade));
     getDocs(q).then(snap => {
-      setExams(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Exam)));
+      setExams(snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Exam)));
       setLoading(false);
     });
   };
@@ -3674,8 +4090,13 @@ const ExamsView = ({ user }: { user: User }) => {
               whileHover={{ y: -4 }}
               className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-xl transition-all group"
             >
-              <div className="w-14 h-14 bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl flex items-center justify-center text-indigo-600 dark:text-indigo-400 mb-6">
-                <ClipboardList size={28} />
+              <div className="flex items-center justify-between mb-6">
+                <div className="w-14 h-14 bg-indigo-50 dark:bg-indigo-900/20 rounded-2xl flex items-center justify-center text-indigo-600 dark:text-indigo-400">
+                  <ClipboardList size={28} />
+                </div>
+                {exam.type === 'google_form' && (
+                  <span className="px-3 py-1 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 rounded-xl text-xs font-bold">نموذج جوجل</span>
+                )}
               </div>
               <h4 className="font-bold text-xl text-slate-900 dark:text-slate-100">{exam.title}</h4>
               <div className="mt-4 flex items-center gap-4 text-sm text-slate-500">
@@ -3727,7 +4148,7 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
   const fetchExams = () => {
     const q = query(collection(db, 'exams'), where('subjectId', '==', subject.id));
     getDocs(q).then(snap => {
-      setExams(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Exam)));
+      setExams(snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Exam)));
     });
   };
 
@@ -3738,8 +4159,8 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
         const d = doc.data();
         return {
           id: doc.id,
-          ...d,
-          options: typeof d.options === 'string' ? JSON.parse(d.options) : d.options
+          ...(d as any),
+          options: typeof (d as any).options === 'string' ? JSON.parse((d as any).options) : (d as any).options
         } as unknown as Question;
       });
       setQuestions(data);
@@ -3840,12 +4261,22 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100">امتحانات مادة {subject.name}</h3>
-        <button 
-          onClick={() => setShowAddExam(true)}
-          className="flex items-center gap-2 py-2 px-4 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-all"
-        >
-          <Plus size={18} /> إضافة امتحان
-        </button>
+        <div className="flex gap-2">
+          <a 
+            href="https://docs.google.com/forms/create?hl=ar" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 py-2 px-4 bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 rounded-xl font-bold text-sm hover:bg-amber-600 hover:text-white transition-all"
+          >
+            <ExternalLink size={18} /> إنشاء نموذج جوجل
+          </a>
+          <button 
+            onClick={() => setShowAddExam(true)}
+            className="flex items-center gap-2 py-2 px-4 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-all"
+          >
+            <Plus size={18} /> إضافة امتحان
+          </button>
+        </div>
       </div>
 
       {showAddExam && (
@@ -3888,12 +4319,17 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
           >
             <div className="flex items-center justify-between mb-2">
               <h4 className={`font-bold text-lg ${selectedExam?.id === exam.id ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-900 dark:text-slate-100'}`}>{exam.title}</h4>
-              <button 
-                onClick={(e) => { e.stopPropagation(); handleDeleteExam(exam.id); }}
-                className="text-red-400 opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded"
-              >
-                <Trash2 size={18} />
-              </button>
+              <div className="flex items-center gap-2">
+                {exam.type === 'google_form' && (
+                  <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-[10px] font-bold">Google Form</span>
+                )}
+                <button 
+                  onClick={(e) => { e.stopPropagation(); handleDeleteExam(exam.id); }}
+                  className="text-red-400 opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-50 rounded"
+                >
+                  <Trash2 size={18} />
+                </button>
+              </div>
             </div>
             <p className="text-sm text-slate-500">{exam.duration} دقيقة</p>
           </div>
@@ -4161,7 +4597,7 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
     try {
       const q = query(collection(db, 'subjects'), where('grade', '==', selectedGrade));
       const snap = await getDocs(q);
-      const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Subject));
+      const data = snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Subject));
       
       if (user.role === 'teacher') {
         setSubjects(data.filter(s => user.assigned_subjects?.includes(s.name)));
@@ -4177,7 +4613,7 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
     try {
       const q = query(collection(db, 'lessons'), where('subjectId', '==', subjectId));
       const snap = await getDocs(q);
-      setLessons(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as unknown as Lesson)));
+      setLessons(snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Lesson)));
     } catch (err) {
       console.error("Failed to fetch lessons", err);
     }
@@ -4569,7 +5005,7 @@ const GradesView = ({ user }: { user: User }) => {
       }
       
       getDocs(q).then(snap => {
-        setContent(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        setContent(snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) })));
       });
     }
   }, [selectedGrade, selectedCategory, selectedSection, selectedSubject]);
@@ -4605,7 +5041,7 @@ const GradesView = ({ user }: { user: User }) => {
       if (selectedSubject) q = query(q, where('subject', '==', selectedSubject));
       
       getDocs(q).then(snap => {
-        setContent(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        setContent(snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) })));
       });
     } catch (err) {
       console.error("Failed to add content", err);
@@ -4924,6 +5360,7 @@ const GradesView = ({ user }: { user: User }) => {
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -4980,12 +5417,23 @@ export default function App() {
   };
 
   useEffect(() => {
+    const testConnection = async () => {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration. The client is offline.");
+        }
+      }
+    };
+    testConnection();
+
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         try {
           const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
           if (userDoc.exists()) {
-            setUser(userDoc.data() as User);
+            setUser({ id: userDoc.id, ...(userDoc.data() as any) } as User);
           }
         } catch (err) {
           console.error('Error fetching user profile:', err);
@@ -4993,9 +5441,21 @@ export default function App() {
       } else {
         setUser(null);
       }
+      setAuthLoading(false);
     });
     return () => unsubscribe();
   }, []);
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+          <p className="text-slate-600 dark:text-slate-400 font-medium animate-pulse">جاري التحميل...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return <LoginView onLogin={setUser} />;
@@ -5017,7 +5477,8 @@ export default function App() {
   const filteredMenuItems = menuItems.filter(item => item.roles.includes(user.role));
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 transition-colors duration-300">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 transition-colors duration-300">
       {/* Mobile Menu Overlay */}
       <AnimatePresence>
         {isMobileMenuOpen && (
@@ -5205,6 +5666,7 @@ export default function App() {
       
       <main className={`pt-20 pb-24 lg:pb-12 px-4 md:px-6 transition-all duration-300 ${isSidebarOpen ? 'lg:mr-64' : ''}`}>
         <div className="max-w-6xl mx-auto">
+          <UpdateBanner />
           <AnimatePresence mode="wait">
             <motion.div
               key={activeTab}
@@ -5222,12 +5684,13 @@ export default function App() {
               {activeTab === 'grades' && <GradesView user={user} />}
               {activeTab === 'ai-chat' && <AIChatView user={user} />}
               {activeTab === 'chat' && <ChatView user={user} />}
-              {activeTab === 'profile' && <ProfileView user={user} />}
+              {activeTab === 'profile' && <ProfileView user={user} setActiveTab={setActiveTab} />}
               {activeTab === 'settings' && <SettingsView user={user} />}
-              {activeTab === 'users' && <AdminUsersView />}
+              {activeTab === 'users' && <AdminUsersView currentUser={user} />}
               {activeTab === 'curriculum' && <CurriculumManagementView user={user} />}
+              {activeTab === 'updates' && <AdminUpdatesView />}
               {/* Other tabs would go here */}
-              {activeTab !== 'dashboard' && activeTab !== 'leaderboard' && activeTab !== 'grades' && activeTab !== 'chat' && activeTab !== 'ai-chat' && activeTab !== 'users' && activeTab !== 'assignments' && activeTab !== 'subjects' && activeTab !== 'profile' && activeTab !== 'settings' && activeTab !== 'curriculum' && activeTab !== 'exams' && activeTab !== 'wallet' && (
+              {activeTab !== 'dashboard' && activeTab !== 'leaderboard' && activeTab !== 'grades' && activeTab !== 'chat' && activeTab !== 'ai-chat' && activeTab !== 'users' && activeTab !== 'assignments' && activeTab !== 'subjects' && activeTab !== 'profile' && activeTab !== 'settings' && activeTab !== 'curriculum' && activeTab !== 'exams' && activeTab !== 'wallet' && activeTab !== 'updates' && (
                 <div className="flex flex-col items-center justify-center py-20 text-slate-400">
                   <Settings size={64} strokeWidth={1} className="mb-4" />
                   <h3 className="text-xl font-semibold">القسم قيد التطوير</h3>
@@ -5241,5 +5704,6 @@ export default function App() {
 
       <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} user={user} />
     </div>
+    </ErrorBoundary>
   );
 }

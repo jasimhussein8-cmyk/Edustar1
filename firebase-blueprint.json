@@ -2,226 +2,91 @@
   "entities": {
     "User": {
       "title": "User",
-      "description": "App user (student, teacher, or admin)",
+      "description": "User profile and stats",
       "type": "object",
       "properties": {
+        "id": { "type": "string" },
         "username": { "type": "string" },
-        "password": { "type": "string" },
         "full_name": { "type": "string" },
-        "role": { "type": "string", "enum": ["student", "teacher", "admin"] },
+        "role": { "type": "string", "enum": ["admin", "teacher", "student"] },
         "grade": { "type": "string" },
-        "section": { "type": "string" },
-        "assigned_grades": { "type": "array", "items": { "type": "string" } },
-        "assigned_sections": { "type": "array", "items": { "type": "string" } },
-        "assigned_subjects": { "type": "array", "items": { "type": "string" } },
-        "subject": { "type": "string" },
         "points": { "type": "number" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "coins": { "type": "number" }
       },
-      "required": ["username", "password", "full_name", "role"]
+      "required": ["id", "username", "full_name", "role"]
     },
     "Subject": {
       "title": "Subject",
       "description": "Educational subject",
       "type": "object",
       "properties": {
+        "id": { "type": "string" },
         "name": { "type": "string" },
-        "grade": { "type": "string" },
-        "image": { "type": "string" },
-        "description": { "type": "string" }
+        "grade": { "type": "string" }
       },
-      "required": ["name", "grade"]
+      "required": ["id", "name", "grade"]
     },
     "Lesson": {
       "title": "Lesson",
-      "description": "Lesson content",
+      "description": "Educational lesson",
       "type": "object",
       "properties": {
-        "subjectId": { "type": "string" },
+        "id": { "type": "string" },
+        "subject_id": { "type": "string" },
         "title": { "type": "string" },
         "content": { "type": "string" },
-        "videoUrl": { "type": "string" },
-        "fileUrl": { "type": "string" },
-        "order": { "type": "number" }
+        "type": { "type": "string", "enum": ["video", "pdf", "text"] },
+        "url": { "type": "string" }
       },
-      "required": ["subjectId", "title"]
+      "required": ["id", "subject_id", "title", "type"]
     },
     "Exam": {
       "title": "Exam",
-      "description": "Assessment exam",
+      "description": "Subject exam",
       "type": "object",
       "properties": {
-        "subjectId": { "type": "string" },
+        "id": { "type": "string" },
+        "subject_id": { "type": "string" },
         "title": { "type": "string" },
-        "duration": { "type": "number" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "duration": { "type": "number" }
       },
-      "required": ["subjectId", "title", "duration"]
+      "required": ["id", "subject_id", "title"]
     },
     "Question": {
       "title": "Question",
       "description": "Exam question",
       "type": "object",
       "properties": {
-        "examId": { "type": "string" },
+        "id": { "type": "string" },
+        "exam_id": { "type": "string" },
         "question_text": { "type": "string" },
         "options": { "type": "array", "items": { "type": "string" } },
         "correct_answer": { "type": "string" },
         "type": { "type": "string", "enum": ["mcq", "tf", "short"] }
       },
-      "required": ["examId", "question_text", "correct_answer", "type"]
-    },
-    "Assignment": {
-      "title": "Assignment",
-      "description": "Student assignment",
-      "type": "object",
-      "properties": {
-        "subjectId": { "type": "string" },
-        "title": { "type": "string" },
-        "description": { "type": "string" },
-        "dueDate": { "type": "string", "format": "date-time" },
-        "fileUrl": { "type": "string" },
-        "teacherId": { "type": "string" }
-      },
-      "required": ["subjectId", "title", "teacherId"]
-    },
-    "Submission": {
-      "title": "Submission",
-      "description": "Assignment submission",
-      "type": "object",
-      "properties": {
-        "assignmentId": { "type": "string" },
-        "studentId": { "type": "string" },
-        "content": { "type": "string" },
-        "fileUrl": { "type": "string" },
-        "submittedAt": { "type": "string", "format": "date-time" },
-        "grade": { "type": "number" },
-        "feedback": { "type": "string" }
-      },
-      "required": ["assignmentId", "studentId"]
-    },
-    "ExamResult": {
-      "title": "ExamResult",
-      "description": "Result of an exam",
-      "type": "object",
-      "properties": {
-        "userId": { "type": "string" },
-        "examId": { "type": "string" },
-        "score": { "type": "number" },
-        "total": { "type": "number" },
-        "takenAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["userId", "examId", "score", "total"]
-    },
-    "Notification": {
-      "title": "Notification",
-      "description": "User notification",
-      "type": "object",
-      "properties": {
-        "userId": { "type": "string" },
-        "title": { "type": "string" },
-        "message": { "type": "string" },
-        "time": { "type": "string" },
-        "read": { "type": "boolean" },
-        "type": { "type": "string" }
-      },
-      "required": ["userId", "title", "message"]
-    },
-    "Badge": {
-      "title": "Badge",
-      "description": "Gamification badge",
-      "type": "object",
-      "properties": {
-        "name": { "type": "string" },
-        "description": { "type": "string" },
-        "icon": { "type": "string" },
-        "requirement": { "type": "string" }
-      },
-      "required": ["name", "icon"]
-    },
-    "Reward": {
-      "title": "Reward",
-      "description": "Gamification reward",
-      "type": "object",
-      "properties": {
-        "name": { "type": "string" },
-        "description": { "type": "string" },
-        "cost": { "type": "number" },
-        "icon": { "type": "string" },
-        "type": { "type": "string" }
-      },
-      "required": ["name", "cost"]
-    },
-    "GradeContent": {
-      "title": "GradeContent",
-      "description": "Educational content for a specific grade",
-      "type": "object",
-      "properties": {
-        "grade": { "type": "string" },
-        "category": { "type": "string" },
-        "title": { "type": "string" },
-        "description": { "type": "string" },
-        "url": { "type": "string" },
-        "type": { "type": "string" },
-        "section": { "type": "string" },
-        "subject": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["grade", "category", "title", "url"]
-    },
-    "Progress": {
-      "title": "Progress",
-      "description": "User progress in a subject",
-      "type": "object",
-      "properties": {
-        "userId": { "type": "string" },
-        "subjectId": { "type": "string" },
-        "completedLessons": { "type": "number" },
-        "totalLessons": { "type": "number" }
-      },
-      "required": ["userId", "subjectId"]
-    },
-    "Recommendation": {
-      "title": "Recommendation",
-      "description": "AI generated recommendation",
-      "type": "object",
-      "properties": {
-        "userId": { "type": "string" },
-        "title": { "type": "string" },
-        "description": { "type": "string" },
-        "type": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" }
-      },
-      "required": ["userId", "title"]
-    },
-    "Favorite": {
-      "title": "Favorite",
-      "description": "User favorite lesson",
-      "type": "object",
-      "properties": {
-        "userId": { "type": "string" },
-        "lessonId": { "type": "string" },
-        "title": { "type": "string" },
-        "subject": { "type": "string" }
-      },
-      "required": ["userId", "lessonId"]
+      "required": ["id", "exam_id", "question_text", "correct_answer", "type"]
     }
   },
   "firestore": {
-    "/users/{userId}": { "schema": "User", "description": "User profiles" },
-    "/subjects/{subjectId}": { "schema": "Subject", "description": "Subject list" },
-    "/lessons/{lessonId}": { "schema": "Lesson", "description": "Lesson content" },
-    "/exams/{examId}": { "schema": "Exam", "description": "Exams" },
-    "/questions/{questionId}": { "schema": "Question", "description": "Questions for exams" },
-    "/assignments/{assignmentId}": { "schema": "Assignment", "description": "Assignments" },
-    "/submissions/{submissionId}": { "schema": "Submission", "description": "Assignment submissions" },
-    "/exam_results/{resultId}": { "schema": "ExamResult", "description": "Exam results" },
-    "/notifications/{notificationId}": { "schema": "Notification", "description": "User notifications" },
-    "/badges/{badgeId}": { "schema": "Badge", "description": "Badges" },
-    "/rewards/{rewardId}": { "schema": "Reward", "description": "Rewards" },
-    "/grade_content/{contentId}": { "schema": "GradeContent", "description": "Grade specific content" },
-    "/progress/{progressId}": { "schema": "Progress", "description": "User progress" },
-    "/recommendations/{recId}": { "schema": "Recommendation", "description": "AI recommendations" },
-    "/favorites/{favId}": { "schema": "Favorite", "description": "User favorites" }
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User documents"
+    },
+    "/subjects/{subjectId}": {
+      "schema": "Subject",
+      "description": "Subject documents"
+    },
+    "/lessons/{lessonId}": {
+      "schema": "Lesson",
+      "description": "Lesson documents"
+    },
+    "/exams/{examId}": {
+      "schema": "Exam",
+      "description": "Exam documents"
+    },
+    "/questions/{questionId}": {
+      "schema": "Question",
+      "description": "Question documents"
+    }
   }
 }

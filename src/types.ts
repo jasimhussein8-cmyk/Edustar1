@@ -36,6 +36,8 @@ export interface Exam {
   subject_id: string;
   title: string;
   duration: number;
+  type?: 'internal' | 'google_form';
+  googleFormUrl?: string;
 }
 
 export interface Question {
