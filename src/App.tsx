@@ -47,6 +47,10 @@ import {
   MoreHorizontal,
   StickyNote,
   ExternalLink,
+  AlertCircle,
+  Info,
+  RefreshCw,
+  Cloud,
   User as UserIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -58,6 +62,8 @@ import {
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword,
   onAuthStateChanged,
+  signInWithPopup,
+  GoogleAuthProvider,
   signOut,
   doc, 
   setDoc, 
@@ -74,7 +80,10 @@ import {
   limit,
   Timestamp,
   getDocFromServer,
-  uploadFile
+  uploadFile,
+  uploadFileWithProgress,
+  storage,
+  storageRef
 } from './firebase';
 import { 
   LineChart, 
@@ -89,6 +98,11 @@ import {
   BarChart,
   Bar
 } from 'recharts';
+import { Capacitor } from '@capacitor/core';
+import { Browser } from '@capacitor/browser';
+import { App as CapacitorApp } from '@capacitor/app';
+import { Filesystem, Directory } from '@capacitor/filesystem';
+import { Device } from '@capacitor/device';
 import { User, Subject, Lesson, Exam, Question, Message, Role, UserStats, LeaderboardEntry, SubjectProgress, Assignment, Submission, Recommendation, Reward } from './types';
 import { getDocFromServer as testGetDocFromServer } from 'firebase/firestore';
 
@@ -237,7 +251,7 @@ const StudyAssistant = ({ user, context }: { user: User, context?: string }) => 
             <div className="p-4 border-t border-slate-100 dark:border-slate-800 flex gap-2">
               <input 
                 type="text"
-                value={message}
+                value={message || ''}
                 onChange={e => setMessage(e.target.value)}
                 onKeyPress={e => e.key === 'Enter' && handleSend()}
                 placeholder="اسأل سؤالاً..."
@@ -264,6 +278,56 @@ const StudyAssistant = ({ user, context }: { user: User, context?: string }) => 
       </motion.button>
     </div>
   );
+};
+
+const getBackendUrl = () => {
+  // In development/preview, we can use relative paths
+  // But on native platforms, we MUST use the full deployed URL
+  if (Capacitor.isNativePlatform()) {
+    // This should be the deployed URL of the app (e.g., the 'App URL' or 'Shared App URL')
+    // IMPORTANT: Update this URL if you deploy to a different environment
+    return 'https://ais-dev-awakvcfp3fxe76fgpl75fi-174814313555.europe-west2.run.app';
+  }
+  return '';
+};
+
+const handleOpenUrl = async (url: string) => {
+  if (!url) return;
+  
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await Browser.open({ url });
+    } catch (err) {
+      console.error('Error opening URL with Browser:', err);
+      window.open(url, '_blank');
+    }
+  } else {
+    window.open(url, '_blank');
+  }
+};
+
+const handleDownloadFile = async (url: string, fileName: string) => {
+  if (!url) return;
+
+  if (Capacitor.isNativePlatform()) {
+    try {
+      // For native platforms, we can try to download using Filesystem or just use Browser.open
+      // Browser.open is usually enough as the system browser handles the download.
+      await Browser.open({ url });
+    } catch (err) {
+      console.error('Error downloading file with Browser:', err);
+      window.open(url, '_blank');
+    }
+  } else {
+    // For web, we can try to trigger a download
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    link.target = '_blank';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
 };
 
 const Logo = ({ size = "md" }: { size?: "sm" | "md" | "lg" }) => {
@@ -328,14 +392,12 @@ const DownloadAppButton = () => {
   if (!downloadUrl) return null;
 
   return (
-    <a 
-      href={downloadUrl}
-      target="_blank"
-      rel="noopener noreferrer"
+    <button 
+      onClick={() => handleOpenUrl(downloadUrl)}
       className="w-full flex items-center justify-center gap-2 py-3 bg-indigo-600 text-white rounded-2xl text-xs font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 dark:shadow-indigo-900/20 mt-4"
     >
       <Download size={18} /> تحميل التطبيق
-    </a>
+    </button>
   );
 };
 
@@ -439,17 +501,35 @@ const SubmissionModal = ({ assignment, user, onClose, onSuccess }: { assignment:
   const [textEntry, setTextEntry] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setUploadProgress(0);
 
     try {
+      let fileUrl = '';
+      if (file) {
+        try {
+          const safeFileName = file.name.replace(/\s+/g, '_');
+          const path = `submissions/${assignment.id}/${user.id}/${Date.now()}_${safeFileName}`;
+          fileUrl = await uploadFileWithProgress(path, file, (progress) => {
+            setUploadProgress(Number(progress.toFixed(1)));
+          });
+        } catch (uploadErr: any) {
+          console.error("Upload failed:", uploadErr);
+          alert(`فشل رفع الملف: ${uploadErr.message || 'حدث خطأ غير متوقع'}`);
+          setLoading(false);
+          return;
+        }
+      }
+
       await addDoc(collection(db, 'submissions'), {
         assignmentId: assignment.id.toString(),
         studentId: user.id.toString(),
         content: textEntry,
-        fileUrl: '', // For now, just text
+        fileUrl: fileUrl,
         submittedAt: new Date().toISOString(),
         grade: null,
         feedback: ''
@@ -458,6 +538,7 @@ const SubmissionModal = ({ assignment, user, onClose, onSuccess }: { assignment:
       onClose();
     } catch (err) {
       console.error("Submission failed", err);
+      alert("فشل تسليم الواجب. يرجى المحاولة مرة أخرى.");
     } finally {
       setLoading(false);
     }
@@ -481,7 +562,7 @@ const SubmissionModal = ({ assignment, user, onClose, onSuccess }: { assignment:
           <div>
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">النص (اختياري)</label>
             <textarea 
-              value={textEntry}
+              value={textEntry || ''}
               onChange={(e) => setTextEntry(e.target.value)}
               className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none min-h-[120px] text-right transition-colors duration-300"
               placeholder="اكتب إجابتك أو ملاحظاتك هنا..."
@@ -515,14 +596,165 @@ const SubmissionModal = ({ assignment, user, onClose, onSuccess }: { assignment:
             <button 
               type="submit" 
               disabled={loading}
-              className="flex-1 btn-primary disabled:opacity-50"
+              className="flex-1 btn-primary disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              {loading ? 'جاري التسليم...' : 'تسليم الواجب'}
+              {loading ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  <span>{uploadProgress > 0 ? `جاري الرفع (${uploadProgress}%)` : 'جاري التسليم...'}</span>
+                </>
+              ) : 'تسليم الواجب'}
             </button>
             <button 
               type="button" 
               onClick={onClose}
               className="flex-1 btn-secondary"
+              disabled={loading}
+            >
+              إلغاء
+            </button>
+          </div>
+          {loading && uploadProgress > 0 && (
+            <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden mt-2">
+              <motion.div 
+                initial={{ width: 0 }}
+                animate={{ width: `${uploadProgress}%` }}
+                className="h-full bg-indigo-600"
+              />
+            </div>
+          )}
+        </form>
+      </motion.div>
+    </div>
+  );
+};
+
+const AddAssignmentModal = ({ onClose, onSave, user }: { onClose: () => void, onSave: () => void, user: User }) => {
+  const [formData, setFormData] = useState({
+    title: '',
+    description: '',
+    subjectId: '',
+    subject_name: '',
+    grade: '',
+    section: '',
+    due_date: new Date().toISOString().split('T')[0],
+    points: 100
+  });
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await addDoc(collection(db, 'assignments'), {
+        ...formData,
+        teacherId: user.id,
+        createdAt: new Date().toISOString()
+      });
+      onSave();
+      onClose();
+    } catch (err) {
+      console.error("Failed to add assignment", err);
+      alert("فشل في إضافة الواجب");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+      <motion.div 
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[2.5rem] shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden transition-colors duration-300"
+      >
+        <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+          <h3 className="text-2xl font-bold text-slate-900 dark:text-slate-100">إضافة واجب جديد</h3>
+          <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
+            <X size={24} className="text-slate-400" />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-8 space-y-6">
+          <div>
+            <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">عنوان الواجب</label>
+            <input 
+              type="text" 
+              required
+              value={formData.title}
+              onChange={e => setFormData({...formData, title: e.target.value})}
+              className="w-full px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">الوصف</label>
+            <textarea 
+              required
+              value={formData.description}
+              onChange={e => setFormData({...formData, description: e.target.value})}
+              className="w-full px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all h-32"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">الصف</label>
+              <select 
+                required
+                value={formData.grade}
+                onChange={e => setFormData({...formData, grade: e.target.value})}
+                className="w-full px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+              >
+                <option value="">اختر الصف</option>
+                {['الأول الابتدائي', 'الثاني الابتدائي', 'الثالث الابتدائي', 'الرابع الابتدائي', 'الخامس الابتدائي', 'السادس الابتدائي'].map(g => <option key={g} value={g}>{g}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">الشعبة</label>
+              <select 
+                required
+                value={formData.section}
+                onChange={e => setFormData({...formData, section: e.target.value})}
+                className="w-full px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+              >
+                <option value="">اختر الشعبة</option>
+                {['أ', 'ب', 'ج', 'د'].map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">تاريخ التسليم</label>
+              <input 
+                type="date" 
+                required
+                value={formData.due_date}
+                onChange={e => setFormData({...formData, due_date: e.target.value})}
+                className="w-full px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">الدرجة</label>
+              <input 
+                type="number" 
+                required
+                value={formData.points}
+                onChange={e => setFormData({...formData, points: parseInt(e.target.value)})}
+                className="w-full px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+              />
+            </div>
+          </div>
+          <div className="flex gap-4 pt-4">
+            <button 
+              type="submit" 
+              className="flex-1 btn-primary py-4 text-lg"
+              disabled={loading}
+            >
+              {loading ? 'جاري الحفظ...' : 'حفظ الواجب'}
+            </button>
+            <button 
+              type="button" 
+              onClick={onClose}
+              className="flex-1 btn-secondary py-4 text-lg"
+              disabled={loading}
             >
               إلغاء
             </button>
@@ -533,16 +765,99 @@ const SubmissionModal = ({ assignment, user, onClose, onSuccess }: { assignment:
   );
 };
 
+const SubmissionsListView = ({ assignment, onClose }: { assignment: Assignment, onClose: () => void }) => {
+  const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchSubmissions = async () => {
+      try {
+        const q = query(collection(db, 'submissions'), where('assignmentId', '==', assignment.id));
+        const snap = await getDocs(q);
+        setSubmissions(snap.docs.map(doc => ({ id: doc.id, ...(doc.data() as any) } as unknown as Submission)));
+      } catch (err) {
+        console.error("Failed to fetch submissions", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchSubmissions();
+  }, [assignment.id]);
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
+      <motion.div 
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        className="bg-white dark:bg-slate-900 w-full max-w-4xl rounded-[2.5rem] shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden transition-colors duration-300"
+      >
+        <div className="p-8 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+          <div>
+            <h3 className="text-2xl font-bold text-slate-900 dark:text-slate-100">تسليمات: {assignment.title}</h3>
+            <p className="text-sm text-slate-500 dark:text-slate-400">إجمالي التسليمات: {submissions.length}</p>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors">
+            <X size={24} className="text-slate-400" />
+          </button>
+        </div>
+        <div className="p-8">
+          {loading ? (
+            <div className="flex justify-center py-12">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
+            </div>
+          ) : submissions.length === 0 ? (
+            <div className="text-center py-12">
+              <p className="text-slate-500 dark:text-slate-400">لا توجد تسليمات بعد.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {submissions.map(sub => (
+                <div key={sub.id} className="p-4 rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
+                  <div className="flex justify-between items-start mb-2">
+                    <span className="font-bold text-slate-900 dark:text-slate-100">{sub.studentId}</span>
+                    <span className="text-xs text-slate-500">{new Date(sub.submittedAt).toLocaleString('ar-EG')}</span>
+                  </div>
+                  <p className="text-sm text-slate-600 dark:text-slate-400 mb-3 line-clamp-2">{sub.content}</p>
+                  {sub.fileUrl && (
+                    <a 
+                      href={sub.fileUrl} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="text-xs text-indigo-600 hover:underline flex items-center gap-1"
+                    >
+                      <Download size={12} /> تحميل الملف المرفق
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
 const AssignmentsView = ({ user }: { user: User }) => {
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [selectedAssignment, setSelectedAssignment] = useState<Assignment | null>(null);
+  const [viewingSubmissions, setViewingSubmissions] = useState<Assignment | null>(null);
+  const [showAddAssignment, setShowAddAssignment] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const fetchData = async () => {
     try {
-      const assignmentsQuery = query(collection(db, 'assignments'), where('grade', '==', user.grade));
-      const submissionsQuery = query(collection(db, 'submissions'), where('studentId', '==', user.id));
+      let assignmentsQuery;
+      if (user.role === 'student') {
+        assignmentsQuery = query(collection(db, 'assignments'), where('grade', '==', user.grade));
+      } else {
+        assignmentsQuery = query(collection(db, 'assignments'));
+      }
+      
+      const submissionsQuery = user.role === 'student' 
+        ? query(collection(db, 'submissions'), where('studentId', '==', user.id))
+        : query(collection(db, 'submissions'));
       
       const [assignmentsSnap, submissionsSnap] = await Promise.all([
         getDocs(assignmentsQuery),
@@ -563,18 +878,43 @@ const AssignmentsView = ({ user }: { user: User }) => {
 
   useEffect(() => {
     fetchData();
-  }, [user.grade, user.id]);
+  }, [user.grade, user.id, user.role]);
 
-  const getSubmission = (assignmentId: number) => {
-    return submissions.find(s => s.assignment_id === assignmentId);
+  const getSubmission = (assignmentId: string) => {
+    return submissions.find(s => s.assignmentId === assignmentId);
   };
 
   return (
     <div className="space-y-8">
-      <header>
-        <h2 className="text-2xl md:text-3xl font-bold text-slate-900 dark:text-slate-100 transition-colors duration-300">الواجبات المنزلية</h2>
-        <p className="text-sm md:text-base text-slate-500 dark:text-slate-400 mt-1 transition-colors duration-300">تابع واجباتك وقم بتسليمها في الوقت المحدد.</p>
+      <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl md:text-3xl font-bold text-slate-900 dark:text-slate-100 transition-colors duration-300">الواجبات المنزلية</h2>
+          <p className="text-sm md:text-base text-slate-500 dark:text-slate-400 mt-1 transition-colors duration-300">تابع واجباتك وقم بتسليمها في الوقت المحدد.</p>
+        </div>
+        {(user.role === 'admin' || user.role === 'teacher') && (
+          <button 
+            onClick={() => setShowAddAssignment(true)}
+            className="btn-primary flex items-center gap-2 self-start md:self-center"
+          >
+            <Plus size={20} /> إضافة واجب
+          </button>
+        )}
       </header>
+
+      {showAddAssignment && (
+        <AddAssignmentModal 
+          user={user} 
+          onClose={() => setShowAddAssignment(false)} 
+          onSave={fetchData} 
+        />
+      )}
+
+      {viewingSubmissions && (
+        <SubmissionsListView 
+          assignment={viewingSubmissions} 
+          onClose={() => setViewingSubmissions(null)} 
+        />
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {assignments.map((assignment) => {
@@ -585,7 +925,14 @@ const AssignmentsView = ({ user }: { user: User }) => {
             <motion.div 
               key={assignment.id}
               whileHover={{ y: -4 }}
-              className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md transition-all duration-300"
+              onClick={() => {
+                if (user.role === 'student') {
+                  setSelectedAssignment(assignment);
+                } else {
+                  setViewingSubmissions(assignment);
+                }
+              }}
+              className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer"
             >
               <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center gap-3">
@@ -756,6 +1103,41 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
     }
   }, []);
 
+  const handleGoogleLogin = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const provider = new GoogleAuthProvider();
+      const result = await signInWithPopup(auth, provider);
+      const firebaseUser = result.user;
+
+      // Check if profile exists
+      const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+      if (userDoc.exists()) {
+        onLogin({ id: userDoc.id, ...(userDoc.data() as any) } as User);
+      } else {
+        // Create a default student profile if it doesn't exist
+        const userData = {
+          id: firebaseUser.uid,
+          username: firebaseUser.email?.split('@')[0] || `user_${firebaseUser.uid.slice(0, 5)}`,
+          full_name: firebaseUser.displayName || 'مستخدم جديد',
+          role: 'student',
+          grade: 'السادس الإعدادي',
+          section: 'أ',
+          points: 0,
+          createdAt: new Date().toISOString()
+        };
+        await setDoc(doc(db, 'users', firebaseUser.uid), userData);
+        onLogin(userData as unknown as User);
+      }
+    } catch (err: any) {
+      console.error(err);
+      setError('فشل تسجيل الدخول بواسطة Google. يرجى التأكد من تفعيل Google Auth في Firebase.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -904,6 +1286,34 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="relative flex items-center justify-center my-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-slate-200 dark:border-slate-800"></div>
+            </div>
+            <div className="relative px-4 bg-slate-50 dark:bg-slate-950 text-xs text-slate-500 uppercase tracking-widest">أو</div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleGoogleLogin}
+            className="w-full flex items-center justify-center gap-3 px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-all font-bold"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24">
+              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+            </svg>
+            تسجيل الدخول بواسطة Google
+          </button>
+
+          <div className="relative flex items-center justify-center my-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-slate-200 dark:border-slate-800"></div>
+            </div>
+            <div className="relative px-4 bg-slate-50 dark:bg-slate-950 text-xs text-slate-500 uppercase tracking-widest">بيانات الدخول</div>
+          </div>
+
           {isRegistering && (
             <>
               <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl mb-4">
@@ -933,7 +1343,7 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">الاسم الكامل</label>
                 <input 
                   type="text" 
-                  value={fullName}
+                  value={fullName || ''}
                   onChange={(e) => setFullName(e.target.value)}
                   className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all text-right"
                   placeholder="أدخل اسمك الكامل"
@@ -946,7 +1356,7 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">اسم المستخدم</label>
             <input 
               type="text" 
-              value={username}
+              value={username || ''}
               onChange={(e) => setUsername(e.target.value)}
               className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all text-right"
               placeholder="أدخل اسم المستخدم"
@@ -957,7 +1367,7 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
             <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">كلمة المرور</label>
             <input 
               type="password" 
-              value={password}
+              value={password || ''}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all text-right"
               placeholder="••••••••"
@@ -969,7 +1379,7 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">الصف الدراسي</label>
                 <select 
-                  value={grade}
+                  value={grade || ''}
                   onChange={(e) => setGrade(e.target.value)}
                   className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all text-right appearance-none"
                   required
@@ -980,7 +1390,7 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">الشعبة</label>
                 <select 
-                  value={section}
+                  value={section || ''}
                   onChange={(e) => setSection(e.target.value)}
                   className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all text-right appearance-none"
                   required
@@ -1039,7 +1449,33 @@ const LoginView = ({ onLogin }: { onLogin: (u: User) => void }) => {
               </div>
             </>
           )}
-          {error && <p className="text-red-500 dark:text-red-400 text-sm">{error}</p>}
+          {error && (
+            <div className="p-4 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 rounded-2xl">
+              <p className="text-red-600 dark:text-red-400 text-sm whitespace-pre-line leading-relaxed">{error}</p>
+              {error.includes('run.app') && (
+                <div className="mt-3 flex flex-col gap-2">
+                  <button 
+                    onClick={() => {
+                      navigator.clipboard.writeText('ais-dev-awakvcfp3fxe76fgpl75fi-174814313555.europe-west2.run.app');
+                      alert('تم نسخ النطاق الأول');
+                    }}
+                    className="text-[10px] bg-white dark:bg-slate-800 border border-red-200 dark:border-red-700 px-3 py-1.5 rounded-lg text-red-600 dark:text-red-400 hover:bg-red-50 transition-colors"
+                  >
+                    نسخ النطاق الأول (Dev)
+                  </button>
+                  <button 
+                    onClick={() => {
+                      navigator.clipboard.writeText('ais-pre-awakvcfp3fxe76fgpl75fi-174814313555.europe-west2.run.app');
+                      alert('تم نسخ النطاق الثاني');
+                    }}
+                    className="text-[10px] bg-white dark:bg-slate-800 border border-red-200 dark:border-red-700 px-3 py-1.5 rounded-lg text-red-600 dark:text-red-400 hover:bg-red-50 transition-colors"
+                  >
+                    نسخ النطاق الثاني (Pre)
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           
           <div className="flex items-center justify-between py-2">
             <label className="flex items-center gap-2 cursor-pointer group">
@@ -1154,7 +1590,7 @@ const PaymentView = ({ user }: { user: User }) => {
                 </div>
                 <input 
                   type="number" 
-                  value={amount}
+                  value={amount || ''}
                   onChange={(e) => setAmount(e.target.value)}
                   className="w-full px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 outline-none text-right"
                   placeholder="أدخل مبلغاً مخصصاً"
@@ -1234,7 +1670,60 @@ const PaymentView = ({ user }: { user: User }) => {
   );
 };
 
+const GoogleDriveSetupGuide = () => {
+  const currentOrigin = window.location.origin;
+  const callbackPath = '/auth/google/callback';
+  const redirectUri = `${currentOrigin}${callbackPath}`;
+
+  return (
+    <div className="p-6 bg-white dark:bg-slate-900 rounded-3xl border border-amber-200 dark:border-amber-900/30 shadow-lg">
+      <div className="flex items-center gap-3 mb-6 text-amber-600">
+        <AlertCircle size={24} />
+        <h3 className="text-xl font-bold">إعداد Google Drive مطلوب</h3>
+      </div>
+      
+      <div className="space-y-6 text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+        <section>
+          <p className="font-bold text-slate-900 dark:text-slate-100 mb-2">1. إنشاء بيانات الاعتماد:</p>
+          <p>اذهب إلى <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Google Cloud Console</a> وقم بإنشاء "OAuth 2.0 Client ID" من نوع "Web Application".</p>
+        </section>
+
+        <section>
+          <p className="font-bold text-slate-900 dark:text-slate-100 mb-2">2. إضافة رابط إعادة التوجيه (Redirect URI):</p>
+          <p className="mb-2">أضف الرابط التالي في قسم "Authorized redirect URIs":</p>
+          <div className="bg-slate-50 dark:bg-slate-800 p-3 rounded-xl font-mono text-[10px] break-all">
+            <p className="select-all text-indigo-600 font-bold">{redirectUri}</p>
+          </div>
+          <p className="mt-2 text-[10px] text-red-500 font-bold">تنبيه: يجب أن يتطابق هذا الرابط تماماً في إعدادات Google لتجنب خطأ "Redirect URI mismatch".</p>
+        </section>
+
+        <section>
+          <p className="font-bold text-slate-900 dark:text-slate-100 mb-2">3. إضافة الأسرار (Secrets):</p>
+          <p>افتح الإعدادات (⚙️) في AI Studio وأضف الأسرار التالية:</p>
+          <ul className="list-disc list-inside space-y-1 mt-2">
+            <li><code className="bg-slate-100 dark:bg-slate-800 px-1 rounded">GOOGLE_CLIENT_ID</code></li>
+            <li><code className="bg-slate-100 dark:bg-slate-800 px-1 rounded">GOOGLE_CLIENT_SECRET</code></li>
+            <li><code className="bg-slate-100 dark:bg-slate-800 px-1 rounded">APP_URL</code> (القيمة: <span className="font-mono text-[10px]">{currentOrigin}</span>)</li>
+          </ul>
+        </section>
+
+        <section className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-2xl border border-blue-100 dark:border-blue-800/30">
+          <p className="font-bold text-blue-800 dark:text-blue-400 mb-2 flex items-center gap-2">
+            <Info size={16} /> نصائح هامة:
+          </p>
+          <ul className="list-decimal list-inside space-y-2 text-[11px]">
+            <li>تأكد من تفعيل <b>Google Drive API</b> في مكتبة واجهات البرمجة (API Library).</li>
+            <li>في شاشة موافقة OAuth (OAuth Consent Screen)، أضف نطاقات (Scopes) الوصول للملفات: <code>.../auth/drive.file</code> و <code>.../auth/drive.readonly</code>.</li>
+            <li>إذا كان التطبيق في وضع "Testing"، يجب إضافة بريدك الإلكتروني كـ "Test User".</li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  );
+};
+
 const GoogleDrivePicker = ({ user, onSelect }: { user: User; onSelect: (file: any) => void }) => {
+  const hasKeys = Boolean(process.env.GOOGLE_CLIENT_ID);
   const [files, setFiles] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1243,7 +1732,7 @@ const GoogleDrivePicker = ({ user, onSelect }: { user: User; onSelect: (file: an
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/google/drive/files?userId=${user.id}`);
+      const res = await fetch(getBackendUrl() + `/api/google/drive/files?userId=${user.id}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setFiles(data);
@@ -1260,9 +1749,9 @@ const GoogleDrivePicker = ({ user, onSelect }: { user: User; onSelect: (file: an
 
   const handleConnect = async () => {
     try {
-      const res = await fetch('/api/auth/google/drive/url');
+      const res = await fetch(getBackendUrl() + '/api/auth/google/drive/url', { credentials: 'include' });
       const { url } = await res.json();
-      window.open(url, 'google_drive_auth', 'width=600,height=700');
+      handleOpenUrl(url);
     } catch (err) {
       console.error(err);
     }
@@ -1275,57 +1764,247 @@ const GoogleDrivePicker = ({ user, onSelect }: { user: User; onSelect: (file: an
       }
     };
     window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
+
+    // For native apps, we can't use postMessage from a system browser.
+    // Instead, we refresh when the app is resumed.
+    let appStateListener: any;
+    if (Capacitor.isNativePlatform()) {
+      appStateListener = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) {
+          fetchFiles();
+        }
+      });
+    }
+
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      if (appStateListener) appStateListener.remove();
+    };
   }, []);
 
   return (
     <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center text-white">
-            <Link size={18} />
-          </div>
-          <h4 className="font-bold text-slate-900 dark:text-slate-100">Google Drive</h4>
-        </div>
-        {error ? (
-          <button 
-            onClick={handleConnect}
-            className="text-xs font-bold text-blue-600 hover:underline"
-          >
-            ربط الحساب
-          </button>
-        ) : (
-          <button 
-            onClick={fetchFiles}
-            className="text-xs font-bold text-slate-500 hover:text-indigo-600"
-          >
-            تحديث القائمة
-          </button>
-        )}
-      </div>
-
-      {loading ? (
-        <div className="flex justify-center py-4">
-          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"></div>
-        </div>
-      ) : error ? (
-        <p className="text-xs text-slate-500 text-center py-2">{error === 'Google Drive not connected' ? 'قم بربط حسابك للوصول إلى ملفاتك' : error}</p>
-      ) : files.length === 0 ? (
-        <p className="text-xs text-slate-500 text-center py-2">لا توجد ملفات متاحة.</p>
+      {!hasKeys ? (
+        <GoogleDriveSetupGuide />
       ) : (
-        <div className="space-y-2 max-h-48 overflow-y-auto pr-2">
-          {files.map((file) => (
-            <div 
-              key={file.id}
-              onClick={() => onSelect(file)}
-              className="flex items-center gap-3 p-2 hover:bg-white dark:hover:bg-slate-800 rounded-xl cursor-pointer border border-transparent hover:border-slate-200 dark:hover:border-slate-700 transition-all group"
-            >
-              <img src={file.iconLink} alt="" className="w-4 h-4" referrerPolicy="no-referrer" />
-              <span className="text-xs text-slate-700 dark:text-slate-300 truncate flex-1">{file.name}</span>
-              <Plus size={14} className="text-slate-300 group-hover:text-indigo-600" />
+        <>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center text-white">
+                <Link size={18} />
+              </div>
+              <h4 className="font-bold text-slate-900 dark:text-slate-100">Google Drive</h4>
             </div>
-          ))}
-        </div>
+            {error ? (
+              <button 
+                onClick={handleConnect}
+                className="text-xs font-bold text-blue-600 hover:underline"
+              >
+                ربط الحساب
+              </button>
+            ) : (
+              <button 
+                onClick={fetchFiles}
+                className="text-xs font-bold text-slate-500 hover:text-indigo-600"
+              >
+                تحديث القائمة
+              </button>
+            )}
+          </div>
+
+          {loading ? (
+            <div className="flex justify-center py-4">
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"></div>
+            </div>
+          ) : error ? (
+            <p className="text-xs text-slate-500 text-center py-2">{error === 'Google Drive not connected' ? 'قم بربط حسابك للوصول إلى ملفاتك' : error}</p>
+          ) : files.length === 0 ? (
+            <p className="text-xs text-slate-500 text-center py-2">لا توجد ملفات متاحة.</p>
+          ) : (
+            <div className="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+              {files.map((file) => (
+                <div 
+                  key={file.id}
+                  onClick={() => onSelect(file)}
+                  className="flex items-center gap-3 p-2 hover:bg-white dark:hover:bg-slate-800 rounded-xl cursor-pointer border border-transparent hover:border-slate-200 dark:hover:border-slate-700 transition-all group text-right"
+                >
+                  <img src={file.iconLink} alt="" className="w-4 h-4" referrerPolicy="no-referrer" />
+                  <span className="text-xs text-slate-700 dark:text-slate-300 truncate flex-1">{file.name}</span>
+                  <Plus size={14} className="text-slate-300 group-hover:text-indigo-600" />
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
+
+const OneDriveSetupGuide = () => {
+  const currentOrigin = window.location.origin;
+  const callbackPath = '/auth/microsoft/callback';
+  const redirectUri = `${currentOrigin}${callbackPath}`;
+
+  return (
+    <div className="p-6 bg-white dark:bg-slate-900 rounded-3xl border border-blue-200 dark:border-blue-900/30 shadow-lg">
+      <div className="flex items-center gap-3 mb-6 text-blue-600">
+        <AlertCircle size={24} />
+        <h3 className="text-xl font-bold">إعداد OneDrive مطلوب</h3>
+      </div>
+      
+      <div className="space-y-6 text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+        <section>
+          <p className="font-bold text-slate-900 dark:text-slate-100 mb-2">1. إنشاء تطبيق في Azure:</p>
+          <p>اذهب إلى <a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">Azure Portal</a> وقم بإنشاء تطبيق جديد.</p>
+        </section>
+
+        <section>
+          <p className="font-bold text-slate-900 dark:text-slate-100 mb-2">2. إضافة رابط إعادة التوجيه (Redirect URI):</p>
+          <p className="mb-2">أضف الرابط التالي في قسم "Authentication" -&gt; "Add a platform" -&gt; "Web":</p>
+          <div className="bg-slate-50 dark:bg-slate-800 p-3 rounded-xl font-mono text-[10px] break-all">
+            <p className="select-all text-blue-600 font-bold">{redirectUri}</p>
+          </div>
+          <p className="mt-2 text-[10px] text-red-500 font-bold">تنبيه: يجب أن يتطابق هذا الرابط تماماً في إعدادات Azure لتجنب خطأ "Access blocked".</p>
+        </section>
+
+        <section>
+          <p className="font-bold text-slate-900 dark:text-slate-100 mb-2">3. إضافة الأسرار (Secrets):</p>
+          <p>افتح الإعدادات (⚙️) في AI Studio وأضف الأسرار التالية:</p>
+          <ul className="list-disc list-inside space-y-1 mt-2">
+            <li><code className="bg-slate-100 dark:bg-slate-800 px-1 rounded">MICROSOFT_CLIENT_ID</code></li>
+            <li><code className="bg-slate-100 dark:bg-slate-800 px-1 rounded">MICROSOFT_CLIENT_SECRET</code></li>
+          </ul>
+        </section>
+
+        <section className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-2xl border border-amber-100 dark:border-amber-800/30">
+          <p className="font-bold text-amber-800 dark:text-amber-400 mb-2 flex items-center gap-2">
+            <Info size={16} /> حل مشكلة "Access blocked":
+          </p>
+          <ul className="list-decimal list-inside space-y-2 text-[11px]">
+            <li>تأكد من أن <b>Redirect URI</b> في Azure هو نفسه الرابط الموضح أعلاه.</li>
+            <li>تأكد من اختيار <b>"Accounts in any organizational directory (Any Microsoft Entra ID tenant - Multitenant)"</b> عند إنشاء التطبيق.</li>
+            <li>في قسم <b>API Permissions</b>، أضف <code>Files.ReadWrite.All</code> و <code>offline_access</code> و <code>User.Read</code> وقم بالموافقة عليها (Grant admin consent).</li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  );
+};
+
+const OneDrivePicker = ({ user, onSelect }: { user: User; onSelect: (file: any) => void }) => {
+  const hasKeys = Boolean(process.env.MICROSOFT_CLIENT_ID);
+  const [files, setFiles] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchFiles = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(getBackendUrl() + `/api/microsoft/onedrive/files`, { credentials: 'include' });
+      if (res.ok) {
+        const data = await res.json();
+        setFiles(data);
+      } else {
+        const err = await res.json();
+        setError(err.error || 'Failed to fetch files');
+      }
+    } catch (err) {
+      setError('Connection error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleConnect = async () => {
+    try {
+      const res = await fetch(getBackendUrl() + '/api/auth/microsoft/url', { credentials: 'include' });
+      const { url } = await res.json();
+      handleOpenUrl(url);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'ONEDRIVE_AUTH_SUCCESS') {
+        fetchFiles();
+      }
+    };
+    window.addEventListener('message', handleMessage);
+
+    // For native apps, refresh when resumed
+    let appStateListener: any;
+    if (Capacitor.isNativePlatform()) {
+      appStateListener = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) {
+          fetchFiles();
+        }
+      });
+    }
+
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      if (appStateListener) appStateListener.remove();
+    };
+  }, []);
+
+  return (
+    <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700">
+      {!hasKeys ? (
+        <OneDriveSetupGuide />
+      ) : (
+        <>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white">
+                <Cloud size={18} />
+              </div>
+              <h4 className="font-bold text-slate-900 dark:text-slate-100">OneDrive</h4>
+            </div>
+            {error ? (
+              <button 
+                onClick={handleConnect}
+                className="text-xs font-bold text-blue-600 hover:underline"
+              >
+                ربط الحساب
+              </button>
+            ) : (
+              <button 
+                onClick={fetchFiles}
+                className="text-xs font-bold text-slate-500 hover:text-blue-600"
+              >
+                تحديث القائمة
+              </button>
+            )}
+          </div>
+
+          {loading ? (
+            <div className="flex justify-center py-4">
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"></div>
+            </div>
+          ) : error ? (
+            <p className="text-xs text-slate-500 text-center py-2">{error === 'OneDrive not connected' ? 'قم بربط حسابك للوصول إلى ملفاتك' : error}</p>
+          ) : files.length === 0 ? (
+            <p className="text-xs text-slate-500 text-center py-2">لا توجد ملفات متاحة.</p>
+          ) : (
+            <div className="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+              {files.map((file) => (
+                <div 
+                  key={file.id}
+                  onClick={() => onSelect(file)}
+                  className="flex items-center gap-3 p-2 hover:bg-white dark:hover:bg-slate-800 rounded-xl cursor-pointer border border-transparent hover:border-slate-200 dark:hover:border-slate-700 transition-all group text-right"
+                >
+                  <FileText size={14} className="text-blue-500" />
+                  <span className="text-xs text-slate-700 dark:text-slate-300 truncate flex-1">{file.name}</span>
+                  <Plus size={14} className="text-slate-300 group-hover:text-blue-600" />
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1460,9 +2139,9 @@ const ProfileView = ({ user, setActiveTab }: { user: User, setActiveTab: (t: str
               <button 
                 onClick={async () => {
                   try {
-                    const res = await fetch('/api/auth/google/drive/url');
+                    const res = await fetch(getBackendUrl() + '/api/auth/google/drive/url', { credentials: 'include' });
                     const { url } = await res.json();
-                    window.open(url, 'google_drive_auth', 'width=600,height=700');
+                    handleOpenUrl(url);
                   } catch (err) {
                     console.error(err);
                   }
@@ -1508,14 +2187,12 @@ const GradeContentWidget = ({ grade }: { grade: string }) => {
               </div>
               <p className="text-sm font-bold text-slate-900 dark:text-slate-100 truncate">{item.title}</p>
             </div>
-            <a 
-              href={item.url} 
-              target="_blank" 
-              rel="noopener noreferrer"
+            <button 
+              onClick={() => handleOpenUrl(item.url)}
               className="w-full flex items-center justify-center gap-2 py-2 bg-white dark:bg-slate-900 text-indigo-600 text-xs font-bold rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-indigo-600 hover:text-white transition-all"
             >
               فتح المصدر <ChevronRight size={14} className="transform rotate-180" />
-            </a>
+            </button>
           </div>
         ))}
       </div>
@@ -1532,7 +2209,7 @@ const QuickNotesWidget = () => {
         <StickyNote className="text-indigo-500" size={24} /> ملاحظات سريعة
       </h3>
       <textarea 
-        value={note}
+        value={note || ''}
         onChange={(e) => setNote(e.target.value)}
         placeholder="اكتب ملاحظة سريعة هنا..."
         className="w-full h-32 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700 text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition-all resize-none"
@@ -1981,7 +2658,7 @@ const StudentDashboard = ({ user, setActiveTab }: { user: User, setActiveTab: (t
             <input 
               type="text"
               placeholder="ابحث عن دروس..."
-              value={searchQuery}
+              value={searchQuery || ''}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pr-12 pl-4 py-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm transition-all"
             />
@@ -2233,7 +2910,7 @@ const StudentDashboard = ({ user, setActiveTab }: { user: User, setActiveTab: (t
           <GoogleDrivePicker 
             user={user} 
             onSelect={(file) => {
-              window.open(file.webViewLink, '_blank');
+              handleOpenUrl(file.webViewLink);
             }} 
           />
         </div>
@@ -2629,7 +3306,7 @@ const AIChatView = ({ user }: { user: User }) => {
       <form onSubmit={handleSend} className="p-6 bg-white dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 flex gap-3">
         <input 
           type="text" 
-          value={input}
+          value={input || ''}
           onChange={(e) => setInput(e.target.value)}
           placeholder="اسألني أي شيء عن دروسك..."
           disabled={loading}
@@ -2718,7 +3395,7 @@ const ChatView = ({ user }: { user: User }) => {
       <form onSubmit={handleSend} className="p-4 border-t border-slate-100 dark:border-slate-800 flex gap-2">
         <input 
           type="text" 
-          value={newMessage}
+          value={newMessage || ''}
           onChange={(e) => setNewMessage(e.target.value)}
           placeholder="اكتب رسالتك هنا..."
           className="flex-1 px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none text-right transition-colors duration-300"
@@ -2880,9 +3557,25 @@ const SubjectDetailView = ({ user, subject, onBack }: { user: User, subject: Sub
   const [completedLessons, setCompletedLessons] = useState<number[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedLesson, setSelectedLesson] = useState<Lesson | null>(null);
+  
+  useEffect(() => {
+    if (selectedLesson) {
+      console.log(`Selected lesson: ${selectedLesson.title} (ID: ${selectedLesson.id})`);
+    } else {
+      console.log('Lesson deselected');
+    }
+  }, [selectedLesson]);
+
   const [note, setNote] = useState('');
   const [savingNote, setSavingNote] = useState(false);
-  const [favorites, setFavorites] = useState<number[]>([]);
+  const [favorites, setFavorites] = useState<string[]>([]);
+
+  const getYouTubeEmbedUrl = (url: string) => {
+    if (!url) return null;
+    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+    const match = url.match(regExp);
+    return (match && match[2].length === 11) ? `https://www.youtube.com/embed/${match[2]}` : null;
+  };
 
   useEffect(() => {
     const q = query(collection(db, 'favorites'), where('userId', '==', user.id));
@@ -3007,6 +3700,104 @@ const SubjectDetailView = ({ user, subject, onBack }: { user: User, subject: Sub
       
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-6">
+          {selectedLesson && (
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-white dark:bg-slate-900 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xl transition-colors duration-300"
+            >
+              <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-indigo-50/30 dark:bg-indigo-900/10">
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                    selectedLesson.type === 'video' ? 'bg-red-100 text-red-600' :
+                    selectedLesson.type === 'pdf' ? 'bg-emerald-100 text-emerald-600' :
+                    'bg-blue-100 text-blue-600'
+                  }`}>
+                    {selectedLesson.type === 'video' ? <PlayCircle size={20} /> : 
+                     selectedLesson.type === 'pdf' ? <FileText size={20} /> : 
+                     <BookOpen size={20} />}
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-900 dark:text-slate-100">{selectedLesson.title}</h3>
+                    <p className="text-[10px] text-slate-500">جاري عرض المحتوى</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setSelectedLesson(null)}
+                  className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-400 transition-all"
+                >
+                  <Plus className="rotate-45" size={24} />
+                </button>
+              </div>
+              
+              <div className="aspect-video bg-slate-100 dark:bg-slate-800 relative">
+                {selectedLesson.type === 'video' ? (
+                  getYouTubeEmbedUrl(selectedLesson.url || '') ? (
+                    <iframe 
+                      src={getYouTubeEmbedUrl(selectedLesson.url || '')!}
+                      className="w-full h-full"
+                      allowFullScreen
+                      title={selectedLesson.title}
+                    />
+                  ) : (
+                    <video 
+                      src={selectedLesson.url} 
+                      controls 
+                      className="w-full h-full"
+                      poster="https://picsum.photos/seed/video/1280/720"
+                    />
+                  )
+                ) : selectedLesson.type === 'pdf' ? (
+                  <iframe 
+                    src={selectedLesson.url} 
+                    className="w-full h-full min-h-[500px]"
+                    title={selectedLesson.title}
+                  />
+                ) : (
+                  <div className="p-8 prose dark:prose-invert max-w-none">
+                    <p className="text-slate-700 dark:text-slate-300 whitespace-pre-wrap">{selectedLesson.content}</p>
+                  </div>
+                )}
+              </div>
+              
+              <div className="p-6 flex items-center justify-between bg-slate-50 dark:bg-slate-800/50">
+                <div className="flex items-center gap-4">
+                  <button 
+                    onClick={() => toggleFavorite(selectedLesson.id)}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all ${
+                      favorites.includes(selectedLesson.id)
+                        ? 'bg-rose-50 text-rose-500'
+                        : 'bg-white dark:bg-slate-900 text-slate-500 hover:text-rose-500'
+                    }`}
+                  >
+                    <Heart size={18} fill={favorites.includes(selectedLesson.id) ? 'currentColor' : 'none'} />
+                    {favorites.includes(selectedLesson.id) ? 'في المفضلة' : 'إضافة للمفضلة'}
+                  </button>
+                  {selectedLesson.url && (
+                    <button 
+                      onClick={() => handleOpenUrl(selectedLesson.url)}
+                      className="flex items-center gap-2 px-4 py-2 bg-white dark:bg-slate-900 text-slate-500 hover:text-indigo-600 rounded-xl text-sm font-bold transition-all"
+                    >
+                      <ExternalLink size={18} />
+                      فتح في نافذة جديدة
+                    </button>
+                  )}
+                </div>
+                <button 
+                  onClick={() => handleCompleteLesson(selectedLesson.id)}
+                  disabled={completedLessons.includes(selectedLesson.id)}
+                  className={`px-6 py-2 rounded-xl text-sm font-bold transition-all ${
+                    completedLessons.includes(selectedLesson.id)
+                      ? 'bg-emerald-100 text-emerald-600 cursor-default'
+                      : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-lg shadow-indigo-200'
+                  }`}
+                >
+                  {completedLessons.includes(selectedLesson.id) ? 'مكتمل ✓' : 'إكمال الدرس'}
+                </button>
+              </div>
+            </motion.div>
+          )}
+
           <div className="bg-white dark:bg-slate-900 rounded-[2.5rem] border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm transition-colors duration-300">
             <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
               <h3 className="font-bold text-xl text-slate-900 dark:text-slate-100 flex items-center gap-2">
@@ -3057,8 +3848,7 @@ const SubjectDetailView = ({ user, subject, onBack }: { user: User, subject: Sub
                       <button 
                         onClick={(e) => { 
                           e.stopPropagation(); 
-                          const url = lesson.url;
-                          window.open(url, '_blank'); 
+                          handleOpenUrl(lesson.url); 
                         }}
                         className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-xl transition-all"
                         title="عرض المحتوى"
@@ -3140,7 +3930,7 @@ const SubjectDetailView = ({ user, subject, onBack }: { user: User, subject: Sub
                   <p className="text-xs font-bold text-indigo-600 dark:text-indigo-400">ملاحظات لـ: {selectedLesson.title}</p>
                 </div>
                 <textarea 
-                  value={note}
+                  value={note || ''}
                   onChange={(e) => setNote(e.target.value)}
                   onBlur={handleSaveNote}
                   placeholder="اكتب ملاحظاتك هنا... سيتم حفظها تلقائياً عند الخروج."
@@ -3197,7 +3987,7 @@ const SubjectsView = ({ user }: { user: User }) => {
           <input 
             type="text"
             placeholder="ابحث عن مادة..."
-            value={searchQuery}
+            value={searchQuery || ''}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full pr-12 pl-4 py-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm transition-all"
           />
@@ -3258,13 +4048,43 @@ const AdminUpdatesView = () => {
   }, []);
 
   const handlePublish = async () => {
+    if (isUpdating) return;
+    if (!latestVersion.trim()) {
+      alert('يرجى إدخال رقم الإصدار.');
+      return;
+    }
+    if (!selectedFile && !downloadUrl.trim()) {
+      alert('يرجى اختيار ملف أو إدخال رابط تحميل.');
+      return;
+    }
+
     setIsUpdating(true);
+    setUploadProgress(0);
+
     try {
       let finalUrl = downloadUrl;
 
       if (selectedFile) {
-        const path = `updates/${selectedFile.name}_${Date.now()}`;
-        finalUrl = await uploadFile(path, selectedFile);
+        const safeFileName = selectedFile.name.replace(/\s+/g, '_');
+        const path = `updates/${Date.now()}_${safeFileName}`;
+        try {
+          finalUrl = await uploadFileWithProgress(
+            path,
+            selectedFile,
+            (progress) => setUploadProgress(Number(progress.toFixed(1)))
+          );
+        } catch (uploadErr: any) {
+          console.error("Upload error details:", uploadErr);
+          let errorMsg = 'فشل رفع الملف.';
+          if (uploadErr.code === 'storage/unauthorized') {
+            errorMsg = 'فشل الرفع: ليس لديك صلاحية للرفع إلى Storage. يرجى التأكد من تفعيل Storage في Firebase Console.';
+          } else if (uploadErr.code === 'storage/quota-exceeded') {
+            errorMsg = 'فشل الرفع: تم تجاوز حصة التخزين المجانية.';
+          } else if (uploadErr.message) {
+            errorMsg = `فشل الرفع: ${uploadErr.message}`;
+          }
+          throw new Error(errorMsg);
+        }
       }
 
       await setDoc(doc(db, 'app_config', 'latest'), {
@@ -3272,12 +4092,14 @@ const AdminUpdatesView = () => {
         download_url: finalUrl,
         updated_at: new Date().toISOString(),
       });
+
       alert('تم نشر التحديث بنجاح!');
       setDownloadUrl(finalUrl);
       setSelectedFile(null);
-    } catch (err) {
-      console.error(err);
-      alert('فشل نشر التحديث.');
+      setUploadProgress(0);
+    } catch (err: any) {
+      console.error("Publish error:", err);
+      alert(err.message || 'فشل نشر التحديث.');
     } finally {
       setIsUpdating(false);
     }
@@ -3291,7 +4113,10 @@ const AdminUpdatesView = () => {
             <Download size={24} />
           </div>
           <div>
-            <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">إدارة التحديثات</h2>
+            <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+              إدارة التحديثات
+              <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" title="النظام محدث"></span>
+            </h2>
             <p className="text-sm text-slate-500">تحكم في إصدار التطبيق وملفات التحميل.</p>
           </div>
         </div>
@@ -3307,7 +4132,7 @@ const AdminUpdatesView = () => {
                 <label className="block text-xs font-bold text-slate-500 mb-2">رقم الإصدار الجديد</label>
                 <input 
                   type="text"
-                  value={latestVersion}
+                  value={latestVersion || ''}
                   onChange={(e) => setLatestVersion(e.target.value)}
                   className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                   placeholder="مثال: 1.0.6"
@@ -3317,7 +4142,7 @@ const AdminUpdatesView = () => {
                 <label className="block text-xs font-bold text-slate-500 mb-2">رابط التحميل (اختياري)</label>
                 <input 
                   type="text"
-                  value={downloadUrl}
+                  value={downloadUrl || ''}
                   onChange={(e) => setDownloadUrl(e.target.value)}
                   className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                   placeholder="https://..."
@@ -3348,13 +4173,46 @@ const AdminUpdatesView = () => {
               </div>
             </div>
 
-            <div className="mt-6 flex justify-end">
+            {isUpdating && uploadProgress > 0 && (
+              <div className="mt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-bold text-slate-500">جاري الرفع...</span>
+                  <span className="text-xs font-bold text-indigo-600">{Math.round(uploadProgress)}%</span>
+                </div>
+                <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2 overflow-hidden">
+                  <motion.div 
+                    className="bg-indigo-600 h-full"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="mt-6 flex justify-between items-center">
+              <button 
+                onClick={async () => {
+                  try {
+                    const testRef = storageRef(storage, 'test_connection.txt');
+                    await uploadFile('test_connection.txt', new Blob(['test'], { type: 'text/plain' }));
+                    alert('اتصال Storage يعمل بنجاح!');
+                  } catch (err: any) {
+                    console.error("Storage test error:", err);
+                    alert(`فشل اختبار الاتصال: ${err.message || 'تأكد من تفعيل Storage في Firebase Console.'}`);
+                  }
+                }}
+                className="text-xs text-indigo-600 font-bold hover:underline"
+              >
+                اختبار اتصال التخزين (Storage)
+              </button>
               <button 
                 onClick={handlePublish}
                 disabled={isUpdating}
                 className="btn-primary flex items-center gap-2"
               >
-                {isUpdating ? 'جاري النشر والرفع...' : 'نشر التحديث'}
+                {isUpdating ? (
+                  uploadProgress > 0 ? `جاري الرفع (${Math.round(uploadProgress)}%)` : 'جاري البدء...'
+                ) : 'نشر التحديث'}
                 <Upload size={18} />
               </button>
             </div>
@@ -3366,6 +4224,7 @@ const AdminUpdatesView = () => {
               <li>عند نشر إصدار جديد، سيظهر تنبيه لجميع المستخدمين (طلاب ومعلمين).</li>
               <li>يمكن للمستخدمين الضغط على التنبيه لتحميل النسخة الجديدة أو تحديث الصفحة.</li>
               <li>تأكد من صحة رابط التحميل قبل النشر.</li>
+              <li className="text-red-600 dark:text-red-400 font-bold">ملاحظة: إذا توقف الرفع عند 0%، يرجى التأكد من تفعيل Storage في Firebase Console وضبط إعدادات CORS للسماح بالرفع من هذا النطاق.</li>
             </ul>
           </div>
         </div>
@@ -3380,19 +4239,20 @@ const UpdateBanner = () => {
   const [show, setShow] = useState(false);
 
   useEffect(() => {
-    const fetchConfig = async () => {
-      const docRef = doc(db, 'app_config', 'latest');
-      const docSnap = await getDoc(docRef);
+    const docRef = doc(db, 'app_config', 'latest');
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data() as any;
         if (data.version !== CURRENT_VERSION) {
           setLatestVersion(data.version);
           setDownloadUrl(data.download_url || '');
           setShow(true);
+        } else {
+          setShow(false);
         }
       }
-    };
-    fetchConfig();
+    });
+    return () => unsubscribe();
   }, []);
 
   if (!show) return null;
@@ -3482,6 +4342,9 @@ const AdminUsersView = ({ currentUser }: { currentUser: User }) => {
     'التربية الإسلامية'
   ];
 
+  const [searchTerm, setSearchTerm] = useState('');
+  const [roleFilter, setRoleFilter] = useState<Role | 'all'>('all');
+
   const fetchUsers = async () => {
     try {
       const snap = await getDocs(collection(db, 'users'));
@@ -3494,6 +4357,13 @@ const AdminUsersView = ({ currentUser }: { currentUser: User }) => {
   useEffect(() => {
     fetchUsers();
   }, []);
+
+  const filteredUsers = users.filter(u => {
+    const matchesSearch = u.full_name?.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                         u.username?.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesRole = roleFilter === 'all' || u.role === roleFilter;
+    return matchesSearch && matchesRole;
+  });
 
   const handleDelete = async (id: string) => {
     if (id === currentUser.id) {
@@ -3534,13 +4404,17 @@ const AdminUsersView = ({ currentUser }: { currentUser: User }) => {
         const userRef = doc(db, 'users', editingUser.id);
         await updateDoc(userRef, formData);
       } else {
-        // For new users, they should really sign up themselves to get a UID
-        // But if we must create one, we'd need a UID. 
-        // For now, let's assume we're mostly editing or we use a random ID (not ideal for Auth)
-        const newDoc = await addDoc(collection(db, 'users'), {
+        // For new users, we create a doc with the username as ID or random
+        // Note: They still need to sign up with this username to get a UID
+        // Or we can use a placeholder UID
+        const tempId = `temp_${Date.now()}`;
+        await setDoc(doc(db, 'users', tempId), {
           ...formData,
-          createdAt: new Date().toISOString()
+          id: tempId,
+          createdAt: new Date().toISOString(),
+          is_pending: true
         });
+        alert('تم إضافة المستخدم كحساب معلق. يجب على المستخدم إنشاء حساب بنفس اسم المستخدم لتفعيل حسابه.');
       }
       
       setShowAdd(false);
@@ -3564,19 +4438,44 @@ const AdminUsersView = ({ currentUser }: { currentUser: User }) => {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100 transition-colors duration-300">إدارة المستخدمين</h2>
-        <button 
-          onClick={() => {
-            setEditingUser(null);
-            setFormData({ 
-              username: '', password: '', full_name: '', role: 'student', grade: '', section: '',
-              assigned_grades: [], assigned_sections: [], assigned_subjects: []
-            });
-            setShowAdd(true);
-          }}
-          className="btn-primary flex items-center gap-2 py-2"
-        >
-          <Plus size={20} /> إضافة مستخدم
-        </button>
+      </div>
+
+      <div className="flex flex-col md:flex-row gap-4 mb-6">
+        <div className="flex-1 relative">
+          <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
+          <input 
+            type="text"
+            placeholder="بحث بالاسم أو اسم المستخدم..."
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            className="w-full pr-10 pl-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+          />
+        </div>
+        <div className="flex gap-2">
+          <select 
+            value={roleFilter}
+            onChange={e => setRoleFilter(e.target.value as any)}
+            className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
+          >
+            <option value="all">كل الأدوار</option>
+            <option value="student">طلاب</option>
+            <option value="teacher">معلمون</option>
+            <option value="admin">مسؤولون</option>
+          </select>
+          <button 
+            onClick={() => {
+              setEditingUser(null);
+              setFormData({ 
+                username: '', password: '', full_name: '', role: 'student', grade: '', section: '',
+                assigned_grades: [], assigned_sections: [], assigned_subjects: []
+              });
+              setShowAdd(true);
+            }}
+            className="btn-primary flex items-center gap-2 whitespace-nowrap"
+          >
+            <Plus size={20} /> إضافة مستخدم
+          </button>
+        </div>
       </div>
 
       {showAdd && (
@@ -3592,7 +4491,7 @@ const AdminUsersView = ({ currentUser }: { currentUser: User }) => {
                 <input 
                   type="text" 
                   required
-                  value={formData.full_name}
+                  value={formData.full_name || ''}
                   onChange={e => setFormData({...formData, full_name: e.target.value})}
                   className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                 />
@@ -3602,7 +4501,7 @@ const AdminUsersView = ({ currentUser }: { currentUser: User }) => {
                 <input 
                   type="text" 
                   required
-                  value={formData.username}
+                  value={formData.username || ''}
                   onChange={e => setFormData({...formData, username: e.target.value})}
                   className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                 />
@@ -3612,7 +4511,7 @@ const AdminUsersView = ({ currentUser }: { currentUser: User }) => {
                 <input 
                   type="password" 
                   required={!editingUser}
-                  value={formData.password}
+                  value={formData.password || ''}
                   onChange={e => setFormData({...formData, password: e.target.value})}
                   className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                 />
@@ -3620,7 +4519,7 @@ const AdminUsersView = ({ currentUser }: { currentUser: User }) => {
               <div>
                 <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">الدور</label>
                 <select 
-                  value={formData.role}
+                  value={formData.role || ''}
                   onChange={e => setFormData({...formData, role: e.target.value as Role})}
                   className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                 >
@@ -3636,7 +4535,7 @@ const AdminUsersView = ({ currentUser }: { currentUser: User }) => {
                 <div>
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">الصف الدراسي</label>
                   <select 
-                    value={formData.grade}
+                    value={formData.grade || ''}
                     onChange={e => setFormData({...formData, grade: e.target.value})}
                     className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                   >
@@ -3647,7 +4546,7 @@ const AdminUsersView = ({ currentUser }: { currentUser: User }) => {
                 <div>
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">الشعبة</label>
                   <select 
-                    value={formData.section}
+                    value={formData.section || ''}
                     onChange={e => setFormData({...formData, section: e.target.value})}
                     className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                   >
@@ -3740,7 +4639,7 @@ const AdminUsersView = ({ currentUser }: { currentUser: User }) => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {users.map((u) => (
+              {filteredUsers.map((u) => (
                 <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors duration-200">
                   <td className="px-6 py-4 text-sm text-slate-900 dark:text-slate-100 font-medium">{u.full_name}</td>
                   <td className="px-6 py-4 text-sm text-slate-500 dark:text-slate-400">{u.username}</td>
@@ -4130,9 +5029,9 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
   const [newExam, setNewExam] = useState({ title: '', duration: 30 });
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
   const [newQuestion, setNewQuestion] = useState({ 
-    questionText: '', 
+    question_text: '', 
     options: ['', ''], 
-    correctAnswer: '', 
+    correct_answer: '', 
     type: 'mcq' as 'mcq' | 'tf' | 'short'
   });
 
@@ -4153,7 +5052,7 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
   };
 
   const fetchQuestions = (examId: string) => {
-    const q = query(collection(db, 'questions'), where('examId', '==', examId));
+    const q = query(collection(db, 'questions'), where('exam_id', '==', examId));
     getDocs(q).then(snap => {
       const data = snap.docs.map(doc => {
         const d = doc.data();
@@ -4201,17 +5100,17 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
       if (editingQuestion) {
         await updateDoc(doc(db, 'questions', editingQuestion.id), {
           ...newQuestion,
-          examId: selectedExam.id
+          exam_id: selectedExam.id
         });
       } else {
         await addDoc(collection(db, 'questions'), {
           ...newQuestion,
-          examId: selectedExam.id
+          exam_id: selectedExam.id
         });
       }
       setShowAddQuestion(false);
       setEditingQuestion(null);
-      setNewQuestion({ questionText: '', options: ['', '', '', ''], correctAnswer: '', type: 'mcq' });
+      setNewQuestion({ question_text: '', options: ['', '', '', ''], correct_answer: '', type: 'mcq' });
       fetchQuestions(selectedExam.id);
     } catch (err) {
       console.error(err);
@@ -4221,10 +5120,10 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
   const startEditQuestion = (q: Question) => {
     setEditingQuestion(q);
     setNewQuestion({
-      questionText: q.question_text,
-      options: q.options,
-      correctAnswer: q.correct_answer,
-      type: q.type
+      question_text: q.question_text || '',
+      options: q.options || ['', ''],
+      correct_answer: q.correct_answer || '',
+      type: q.type || 'mcq'
     });
     setShowAddQuestion(true);
   };
@@ -4286,7 +5185,7 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">عنوان الامتحان</label>
               <input 
                 type="text" required
-                value={newExam.title}
+                value={newExam.title || ''}
                 onChange={e => setNewExam({...newExam, title: e.target.value})}
                 className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500"
               />
@@ -4295,7 +5194,7 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">المدة (بالدقائق)</label>
               <input 
                 type="number" required
-                value={newExam.duration}
+                value={newExam.duration || ''}
                 onChange={e => setNewExam({...newExam, duration: parseInt(e.target.value)})}
                 className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500"
               />
@@ -4347,7 +5246,7 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
               <button 
                 onClick={() => {
                   setEditingQuestion(null);
-                  setNewQuestion({ questionText: '', options: ['', ''], correctAnswer: '', type: 'mcq' });
+                  setNewQuestion({ question_text: '', options: ['', ''], correct_answer: '', type: 'mcq' });
                   setShowAddQuestion(true);
                 }}
                 className="flex items-center gap-2 py-2 px-4 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 dark:shadow-none"
@@ -4401,8 +5300,8 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
                   <textarea 
                     required
                     rows={3}
-                    value={newQuestion.questionText}
-                    onChange={e => setNewQuestion({...newQuestion, questionText: e.target.value})}
+                    value={newQuestion.question_text || ''}
+                    onChange={e => setNewQuestion({...newQuestion, question_text: e.target.value})}
                     placeholder="اكتب السؤال هنا..."
                     className="w-full px-5 py-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all resize-none"
                   />
@@ -4416,7 +5315,7 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
                         <div className={`w-4 h-4 rounded-full border-2 ${newQuestion.correctAnswer === opt && opt !== '' ? 'border-indigo-600 bg-indigo-600' : 'border-slate-300'}`} />
                         <input 
                           type="text" required
-                          value={opt}
+                          value={opt || ''}
                           onChange={e => {
                             const newOpts = [...newQuestion.options];
                             newOpts[idx] = e.target.value;
@@ -4451,9 +5350,9 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
                       <button
                         key={val}
                         type="button"
-                        onClick={() => setNewQuestion({...newQuestion, correctAnswer: val})}
+                        onClick={() => setNewQuestion({...newQuestion, correct_answer: val})}
                         className={`flex-1 py-3 rounded-xl font-bold transition-all border-2 ${
-                          newQuestion.correctAnswer === val 
+                          newQuestion.correct_answer === val 
                           ? 'bg-indigo-50 dark:bg-indigo-900/20 border-indigo-600 text-indigo-600' 
                           : 'bg-white dark:bg-slate-900 border-slate-100 dark:border-slate-800 text-slate-400'
                         }`}
@@ -4469,8 +5368,8 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
                   {newQuestion.type === 'mcq' ? (
                     <select 
                       required
-                      value={newQuestion.correctAnswer}
-                      onChange={e => setNewQuestion({...newQuestion, correctAnswer: e.target.value})}
+                      value={newQuestion.correct_answer || ''}
+                      onChange={e => setNewQuestion({...newQuestion, correct_answer: e.target.value})}
                       className="w-full px-5 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
                     >
                       <option value="">اختر الإجابة الصحيحة</option>
@@ -4481,8 +5380,8 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
                   ) : newQuestion.type === 'short' ? (
                     <input 
                       type="text" required
-                      value={newQuestion.correctAnswer}
-                      onChange={e => setNewQuestion({...newQuestion, correctAnswer: e.target.value})}
+                      value={newQuestion.correct_answer || ''}
+                      onChange={e => setNewQuestion({...newQuestion, correct_answer: e.target.value})}
                       placeholder="الإجابة النموذجية..."
                       className="w-full px-5 py-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
                     />
@@ -4588,6 +5487,8 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
   const [newLesson, setNewLesson] = useState({ title: '', content: '', type: 'video', url: '', sourceType: 'url' });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [managementMode, setManagementMode] = useState<'lessons' | 'exams'>('lessons');
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   const availableGrades = user.role === 'admin' ? [
     'الخامس الابتدائي', 'السادس الابتدائي', 'الأول المتوسط', 'الثاني المتوسط', 'الثالث المتوسط', 'الرابع الإعدادي', 'الخامس الإعدادي', 'السادس الإعدادي'
@@ -4645,13 +5546,59 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
     e.preventDefault();
     if (!selectedSubject) return;
     
+    setIsUploading(true);
+    setUploadProgress(0);
+
     try {
+      let finalUrl = newLesson.url;
+
+      if (newLesson.sourceType === 'file' && selectedFile) {
+        const safeSubjectId = (selectedSubject.id || 'general').replace(/\s+/g, '_');
+        const path = `lessons/${safeSubjectId}/${Date.now()}_${selectedFile.name.replace(/\s+/g, '_')}`;
+        
+        console.log(`Starting lesson upload to path: ${path}`);
+        
+        finalUrl = await uploadFileWithProgress(path, selectedFile, (progress) => {
+          setUploadProgress(Number(progress.toFixed(1)));
+        });
+      } else if (newLesson.sourceType === 'googleDrive' && selectedFile) {
+        // Handle upload to Google Drive if a file is selected
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        const res = await fetch(getBackendUrl() + '/api/google/drive/upload', { 
+          method: 'POST', 
+          body: formData,
+          credentials: 'include'
+        });
+        if (res.ok) {
+          const data = await res.json();
+          finalUrl = data.webViewLink;
+        } else {
+          throw new Error('Google Drive upload failed');
+        }
+      } else if (newLesson.sourceType === 'oneDrive' && selectedFile) {
+        // Handle upload to OneDrive if a file is selected
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        const res = await fetch(getBackendUrl() + '/api/microsoft/onedrive/upload', { 
+          method: 'POST', 
+          body: formData,
+          credentials: 'include'
+        });
+        if (res.ok) {
+          const data = await res.json();
+          finalUrl = data.webUrl;
+        } else {
+          throw new Error('OneDrive upload failed');
+        }
+      }
+
       const lessonData = {
         subjectId: selectedSubject.id,
         title: newLesson.title,
         content: newLesson.content,
         type: newLesson.type,
-        url: newLesson.url,
+        url: finalUrl,
         createdAt: new Date().toISOString()
       };
 
@@ -4659,9 +5606,14 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
       
       setShowAddLesson(false);
       setNewLesson({ title: '', content: '', type: 'video', url: '', sourceType: 'url' });
+      setSelectedFile(null);
       fetchLessons(selectedSubject.id);
     } catch (err) {
       console.error("Failed to add lesson", err);
+      alert('فشل إضافة الدرس. يرجى المحاولة مرة أخرى.');
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(0);
     }
   };
 
@@ -4696,7 +5648,7 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-slate-500">عرض الصف:</span>
             <select 
-              value={selectedGrade}
+              value={selectedGrade || ''}
               onChange={(e) => setSelectedGrade(e.target.value)}
               className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
             >
@@ -4725,7 +5677,7 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
                 type="text" 
                 required
                 placeholder="اسم المادة"
-                value={newSubject.name}
+                value={newSubject.name || ''}
                 onChange={e => setNewSubject({...newSubject, name: e.target.value})}
                 className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
               />
@@ -4819,7 +5771,7 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
                       <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">عنوان الدرس</label>
                       <input 
                         type="text" required
-                        value={newLesson.title}
+                        value={newLesson.title || ''}
                         onChange={e => setNewLesson({...newLesson, title: e.target.value})}
                         className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                       />
@@ -4827,7 +5779,7 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
                     <div>
                       <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">النوع</label>
                       <select 
-                        value={newLesson.type}
+                        value={newLesson.type || ''}
                         onChange={e => setNewLesson({...newLesson, type: e.target.value})}
                         className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                       >
@@ -4839,13 +5791,14 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
                     <div>
                       <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">مصدر المحتوى</label>
                       <select 
-                        value={newLesson.sourceType}
+                        value={newLesson.sourceType || ''}
                         onChange={e => setNewLesson({...newLesson, sourceType: e.target.value})}
                         className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                       >
                         <option value="url">رابط خارجي</option>
                         <option value="file">رفع ملف من الجهاز</option>
                         <option value="googleDrive">Google Drive</option>
+                        <option value="oneDrive">OneDrive</option>
                       </select>
                     </div>
                     <div className="md:col-span-2">
@@ -4854,7 +5807,7 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
                           <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">الرابط</label>
                           <input 
                             type="text" required
-                            value={newLesson.url}
+                            value={newLesson.url || ''}
                             onChange={e => setNewLesson({...newLesson, url: e.target.value})}
                             className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                             placeholder="https://..."
@@ -4869,29 +5822,101 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
                             className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                           />
                         </>
-                      ) : (
-                        <>
-                          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">اختر من Google Drive</label>
-                          <GoogleDrivePicker 
-                            user={user} 
-                            onSelect={(file) => {
-                              setNewLesson({ ...newLesson, url: file.webViewLink, title: newLesson.title || file.name });
-                            }} 
-                          />
+                      ) : newLesson.sourceType === 'googleDrive' ? (
+                        <div className="space-y-3">
+                          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Google Drive</label>
+                          <div className="grid grid-cols-1 gap-4">
+                            <div className="p-4 border border-dashed border-slate-200 dark:border-slate-700 rounded-2xl">
+                              <p className="text-xs text-slate-500 mb-2">رفع ملف جديد إلى Google Drive:</p>
+                              <input 
+                                type="file"
+                                onChange={e => setSelectedFile(e.target.files?.[0] || null)}
+                                className="w-full text-xs"
+                              />
+                            </div>
+                            <div className="relative">
+                              <div className="absolute inset-0 flex items-center" aria-hidden="true">
+                                <div className="w-full border-t border-slate-200 dark:border-slate-700"></div>
+                              </div>
+                              <div className="relative flex justify-center text-xs uppercase">
+                                <span className="bg-white dark:bg-slate-900 px-2 text-slate-500">أو اختر من ملفاتك</span>
+                              </div>
+                            </div>
+                            <GoogleDrivePicker 
+                              user={user} 
+                              onSelect={(file) => {
+                                setNewLesson({ ...newLesson, url: file.webViewLink, title: newLesson.title || file.name });
+                                setSelectedFile(null);
+                              }} 
+                            />
+                          </div>
                           {newLesson.url && (
                             <div className="mt-2 p-3 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl border border-indigo-100 dark:border-indigo-800 flex items-center gap-2">
                               <CheckCircle2 size={16} className="text-indigo-600" />
                               <span className="text-xs text-indigo-600 font-bold truncate flex-1">{newLesson.url}</span>
                             </div>
                           )}
-                        </>
+                        </div>
+                      ) : newLesson.sourceType === 'oneDrive' ? (
+                        <div className="space-y-3">
+                          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">OneDrive</label>
+                          <div className="grid grid-cols-1 gap-4">
+                            <div className="p-4 border border-dashed border-slate-200 dark:border-slate-700 rounded-2xl">
+                              <p className="text-xs text-slate-500 mb-2">رفع ملف جديد إلى OneDrive:</p>
+                              <input 
+                                type="file"
+                                onChange={e => setSelectedFile(e.target.files?.[0] || null)}
+                                className="w-full text-xs"
+                              />
+                            </div>
+                            <div className="relative">
+                              <div className="absolute inset-0 flex items-center" aria-hidden="true">
+                                <div className="w-full border-t border-slate-200 dark:border-slate-700"></div>
+                              </div>
+                              <div className="relative flex justify-center text-xs uppercase">
+                                <span className="bg-white dark:bg-slate-900 px-2 text-slate-500">أو اختر من ملفاتك</span>
+                              </div>
+                            </div>
+                            <OneDrivePicker 
+                              user={user} 
+                              onSelect={(file) => {
+                                setNewLesson({ ...newLesson, url: file.webUrl, title: newLesson.title || file.name });
+                                setSelectedFile(null);
+                              }} 
+                            />
+                          </div>
+                          {newLesson.url && (
+                            <div className="mt-2 p-3 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl border border-indigo-100 dark:border-indigo-800 flex items-center gap-2">
+                              <CheckCircle2 size={16} className="text-indigo-600" />
+                              <span className="text-xs text-indigo-600 font-bold truncate flex-1">{newLesson.url}</span>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-500">يرجى اختيار مصدر صالح.</p>
                       )}
                     </div>
                   </div>
                   <div className="flex justify-end gap-3">
-                    <button type="button" onClick={() => setShowAddLesson(false)} className="px-4 py-2 text-slate-500 dark:text-slate-400">إلغاء</button>
-                    <button type="submit" className="btn-primary px-6 py-2">حفظ الدرس</button>
+                    <button type="button" onClick={() => setShowAddLesson(false)} className="px-4 py-2 text-slate-500 dark:text-slate-400" disabled={isUploading}>إلغاء</button>
+                    <button type="submit" className="btn-primary px-6 py-2 flex items-center gap-2" disabled={isUploading}>
+                      {isUploading ? (
+                        <>
+                          <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                          <span>جاري الرفع ({uploadProgress}%)</span>
+                        </>
+                      ) : 'حفظ الدرس'}
+                    </button>
                   </div>
+                  {isUploading && (
+                    <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden mt-4">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: `${uploadProgress}%` }}
+                        className="h-full bg-indigo-600"
+                      />
+                    </div>
+                  )}
                 </form>
               )}
 
@@ -4958,6 +5983,8 @@ const GradesView = ({ user }: { user: User }) => {
   const [showAddForm, setShowAddForm] = useState(false);
   const [newContent, setNewContent] = useState({ title: '', description: '', url: '', type: 'link', sourceType: 'url' });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   const allGrades = [
     'الخامس الابتدائي',
@@ -5012,8 +6039,95 @@ const GradesView = ({ user }: { user: User }) => {
 
   const handleAddContent = async (e: React.FormEvent) => {
     e.preventDefault();
+    console.log("handleAddContent started", { newContent, selectedFile, selectedGrade, selectedCategory });
+    
+    if (newContent.sourceType === 'file' && !selectedFile) {
+      alert("يرجى اختيار ملف للرفع.");
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadProgress(0);
     
     try {
+      let finalUrl = newContent.url;
+
+      if (newContent.sourceType === 'file' && selectedFile) {
+        try {
+          console.log("Starting file upload process...");
+          // Sanitize path to avoid issues with Arabic characters or spaces in Storage paths
+          const safeGrade = (selectedGrade || 'general').replace(/\s+/g, '_');
+          const safeCategory = (selectedCategory || 'content').replace(/\s+/g, '_');
+          const safeFileName = selectedFile.name.replace(/\s+/g, '_');
+          const path = `grade_content/${safeGrade}/${safeCategory}/${Date.now()}_${safeFileName}`;
+          
+          console.log(`Target path: ${path}, File size: ${selectedFile.size} bytes`);
+          
+          finalUrl = await uploadFileWithProgress(path, selectedFile, (progress) => {
+            console.log(`Upload progress updated: ${progress.toFixed(1)}%`);
+            setUploadProgress(Number(progress.toFixed(1)));
+          });
+          console.log("Upload finished successfully, URL:", finalUrl);
+        } catch (uploadErr: any) {
+          console.error("Upload failed in handleAddContent:", uploadErr);
+          alert(`فشل رفع الملف: ${uploadErr.message || 'حدث خطأ غير متوقع'}`);
+          setIsUploading(false);
+          return;
+        }
+      } else if (newContent.sourceType === 'google_drive' && selectedFile) {
+        try {
+          console.log("Starting Google Drive upload process...");
+          const formData = new FormData();
+          formData.append('file', selectedFile);
+          
+          const res = await fetch(getBackendUrl() + '/api/google/drive/upload', {
+            method: 'POST',
+            body: formData,
+            credentials: 'include'
+          });
+          
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || 'Failed to upload to Google Drive');
+          }
+          
+          const data = await res.json();
+          finalUrl = data.webViewLink;
+          console.log("Google Drive upload finished successfully, URL:", finalUrl);
+        } catch (uploadErr: any) {
+          console.error("Google Drive upload failed:", uploadErr);
+          alert(`فشل الرفع إلى Google Drive: ${uploadErr.message}`);
+          setIsUploading(false);
+          return;
+        }
+      } else if (newContent.sourceType === 'onedrive' && selectedFile) {
+        try {
+          console.log("Starting OneDrive upload process...");
+          const formData = new FormData();
+          formData.append('file', selectedFile);
+          
+          const res = await fetch(getBackendUrl() + '/api/microsoft/onedrive/upload', {
+            method: 'POST',
+            body: formData,
+            credentials: 'include'
+          });
+          
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || 'Failed to upload to OneDrive');
+          }
+          
+          const data = await res.json();
+          finalUrl = data.webUrl;
+          console.log("OneDrive upload finished successfully, URL:", finalUrl);
+        } catch (uploadErr: any) {
+          console.error("OneDrive upload failed:", uploadErr);
+          alert(`فشل الرفع إلى OneDrive: ${uploadErr.message}`);
+          setIsUploading(false);
+          return;
+        }
+      }
+
       const contentData = {
         grade: selectedGrade || '',
         category: selectedCategory || '',
@@ -5022,7 +6136,7 @@ const GradesView = ({ user }: { user: User }) => {
         type: newContent.type,
         section: selectedSection || '',
         subject: selectedSubject || '',
-        url: newContent.url,
+        url: finalUrl,
         createdAt: new Date().toISOString()
       };
 
@@ -5030,6 +6144,7 @@ const GradesView = ({ user }: { user: User }) => {
       
       setShowAddForm(false);
       setNewContent({ title: '', description: '', url: '', type: 'link', sourceType: 'url' });
+      setSelectedFile(null);
       
       // Refresh content
       let q = query(
@@ -5045,6 +6160,9 @@ const GradesView = ({ user }: { user: User }) => {
       });
     } catch (err) {
       console.error("Failed to add content", err);
+      alert("فشل إضافة المحتوى. يرجى المحاولة مرة أخرى.");
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -5223,7 +6341,7 @@ const GradesView = ({ user }: { user: User }) => {
               <input 
                 type="text" 
                 required
-                value={newContent.title}
+                value={newContent.title || ''}
                 onChange={e => setNewContent({...newContent, title: e.target.value})}
                 className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                 placeholder="مثال: كتاب الرياضيات المنهجي"
@@ -5232,7 +6350,7 @@ const GradesView = ({ user }: { user: User }) => {
             <div className="md:col-span-2">
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">الوصف</label>
               <textarea 
-                value={newContent.description}
+                value={newContent.description || ''}
                 onChange={e => setNewContent({...newContent, description: e.target.value})}
                 className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                 placeholder="وصف بسيط للمحتوى"
@@ -5241,7 +6359,7 @@ const GradesView = ({ user }: { user: User }) => {
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">نوع المحتوى</label>
               <select 
-                value={newContent.type}
+                value={newContent.type || ''}
                 onChange={e => setNewContent({...newContent, type: e.target.value})}
                 className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
               >
@@ -5253,12 +6371,16 @@ const GradesView = ({ user }: { user: User }) => {
             <div>
               <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">مصدر المحتوى</label>
               <select 
-                value={newContent.sourceType}
+                value={newContent.sourceType || ''}
                 onChange={e => setNewContent({...newContent, sourceType: e.target.value})}
                 className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
               >
                 <option value="url">رابط خارجي</option>
-                <option value="file">رفع ملف من الجهاز</option>
+                <option value="file">رفع ملف من الجهاز (Firebase)</option>
+                <option value="google_drive">رفع إلى Google Drive</option>
+                <option value="google_drive_pick">اختيار من Google Drive</option>
+                <option value="onedrive">رفع إلى OneDrive</option>
+                <option value="onedrive_pick">اختيار من OneDrive</option>
               </select>
             </div>
             <div className="md:col-span-2">
@@ -5268,21 +6390,61 @@ const GradesView = ({ user }: { user: User }) => {
                   <input 
                     type="text" 
                     required
-                    value={newContent.url}
+                    value={newContent.url || ''}
                     onChange={e => setNewContent({...newContent, url: e.target.value})}
                     className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                     placeholder="رابط الملف أو الفيديو أو الامتحان"
                   />
                 </>
+              ) : newContent.sourceType === 'google_drive_pick' ? (
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">اختر من ملفات Google Drive</label>
+                  <GoogleDrivePicker 
+                    user={user} 
+                    onSelect={(file: any) => {
+                      setNewContent({
+                        ...newContent,
+                        url: file.webViewLink,
+                        title: newContent.title || file.name
+                      });
+                    }} 
+                  />
+                  {newContent.url && (
+                    <p className="text-[10px] text-emerald-600 mt-1">تم اختيار: {newContent.title}</p>
+                  )}
+                </div>
+              ) : newContent.sourceType === 'onedrive_pick' ? (
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">اختر من ملفات OneDrive</label>
+                  <OneDrivePicker 
+                    user={user} 
+                    onSelect={(file: any) => {
+                      setNewContent({
+                        ...newContent,
+                        url: file.webUrl,
+                        title: newContent.title || file.name
+                      });
+                    }} 
+                  />
+                  {newContent.url && (
+                    <p className="text-[10px] text-emerald-600 mt-1">تم اختيار: {newContent.title}</p>
+                  )}
+                </div>
               ) : (
                 <>
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">اختر الملف</label>
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    {newContent.sourceType === 'google_drive' ? 'اختر الملف للرفع إلى Google Drive' : 
+                     newContent.sourceType === 'onedrive' ? 'اختر الملف للرفع إلى OneDrive' : 'اختر الملف'}
+                  </label>
                   <input 
                     type="file" 
                     required
                     onChange={e => setSelectedFile(e.target.files?.[0] || null)}
                     className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                   />
+                  {newContent.sourceType === 'google_drive' && (
+                    <p className="text-[10px] text-slate-500 mt-1">ملاحظة: سيتم رفع الملف إلى حساب Google Drive المرتبط.</p>
+                  )}
                 </>
               )}
             </div>
@@ -5291,13 +6453,30 @@ const GradesView = ({ user }: { user: User }) => {
                 type="button" 
                 onClick={() => setShowAddForm(false)}
                 className="btn-secondary py-2"
+                disabled={isUploading}
               >
                 إلغاء
               </button>
-              <button type="submit" className="btn-primary py-2">
-                حفظ المحتوى
+              <button type="submit" className="btn-primary py-2 flex items-center gap-2" disabled={isUploading}>
+                {isUploading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    <span>جاري الرفع ({uploadProgress}%)</span>
+                  </>
+                ) : 'حفظ المحتوى'}
               </button>
             </div>
+            {isUploading && (
+              <div className="md:col-span-2 mt-2">
+                <div className="w-full bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
+                  <motion.div 
+                    initial={{ width: 0 }}
+                    animate={{ width: `${uploadProgress}%` }}
+                    className="h-full bg-indigo-600"
+                  />
+                </div>
+              </div>
+            )}
           </form>
         </motion.div>
       )}
@@ -5340,14 +6519,12 @@ const GradesView = ({ user }: { user: User }) => {
               </div>
               <h4 className="font-bold text-lg text-slate-900 dark:text-slate-100 mb-2">{item.title}</h4>
               <p className="text-sm text-slate-500 dark:text-slate-400 mb-6 line-clamp-2">{item.description}</p>
-              <a 
-                href={item.url} 
-                target="_blank" 
-                rel="noopener noreferrer"
+              <button 
+                onClick={() => handleOpenUrl(item.url)}
                 className="w-full flex items-center justify-center gap-2 py-3 bg-slate-50 dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 font-bold rounded-2xl hover:bg-indigo-600 hover:text-white transition-all"
               >
                 عرض المحتوى <ChevronRight size={18} className="transform rotate-180" />
-              </a>
+              </button>
             </motion.div>
           ))
         )}
@@ -5362,6 +6539,11 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
+  
+  useEffect(() => {
+    console.log(`Active tab changed to: ${activeTab}`);
+  }, [activeTab]);
+
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const markAllAsRead = () => {

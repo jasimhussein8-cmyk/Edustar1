@@ -24,7 +24,7 @@ export interface Subject {
 
 export interface Lesson {
   id: string;
-  subject_id: string;
+  subjectId: string;
   title: string;
   content: string;
   type: 'video' | 'pdf' | 'text';
@@ -33,7 +33,7 @@ export interface Lesson {
 
 export interface Exam {
   id: string;
-  subject_id: string;
+  subjectId: string;
   title: string;
   duration: number;
   type?: 'internal' | 'google_form';
@@ -109,7 +109,7 @@ export interface SubjectProgress {
 
 export interface Assignment {
   id: string;
-  subject_id: string;
+  subjectId: string;
   title: string;
   description: string;
   due_date: string;
@@ -118,12 +118,12 @@ export interface Assignment {
 
 export interface Submission {
   id: string;
-  assignment_id: string;
-  user_id: string;
-  text_entry?: string;
-  file_url?: string;
+  assignmentId: string;
+  studentId: string;
+  content?: string;
+  fileUrl?: string;
   file_name?: string;
-  submitted_at: string;
+  submittedAt: string;
   grade?: number;
   feedback?: string;
   assignment_title?: string;

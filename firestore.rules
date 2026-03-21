@@ -1,49 +1,95 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper functions
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
     function isAuthenticated() {
       return request.auth != null;
     }
-    
+
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isTeacher() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher');
     }
 
     function isAdmin() {
       return isAuthenticated() && 
         (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-         request.auth.token.email == "jasimhussein8@gmail.com" ||
-         request.auth.token.email == "jasimhussein8@gmail.com");
+         (request.auth.token.email == "jasimhussein8@gmail.com" && request.auth.token.email_verified == true) ||
+         (request.auth.token.email == "jasimhussein8@staredu.com"));
     }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['username', 'full_name', 'role']) &&
+             data.username is string && data.username.size() > 0 && data.username.size() < 50 &&
+             data.full_name is string && data.full_name.size() > 0 && data.full_name.size() < 100 &&
+             data.role in ['admin', 'teacher', 'student'];
+    }
+
+    function isValidSubject(data) {
+      return data.keys().hasAll(['name', 'grade']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.grade is string && data.grade.size() > 0 && data.grade.size() < 50;
+    }
+
+    function isValidLesson(data) {
+      return data.keys().hasAll(['subjectId', 'title', 'type']) &&
+             data.subjectId is string &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.type in ['video', 'pdf', 'text'];
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
 
     match /users/{userId} {
       allow read: if isAuthenticated();
-      allow write: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == 'student';
+      allow update: if isAuthenticated() && (isOwner(userId) || isAdmin()) && isValidUser(request.resource.data) && (isAdmin() || request.resource.data.role == resource.data.role);
+      allow delete: if isAdmin();
     }
 
     match /subjects/{subjectId} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow create, update: if isAdmin() && isValidSubject(request.resource.data);
+      allow delete: if isAdmin();
     }
 
     match /lessons/{lessonId} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow create, update, delete: if isAdmin() || isTeacher();
     }
 
     match /exams/{examId} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow create, update, delete: if isAdmin() || isTeacher();
     }
 
     match /questions/{questionId} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow create, update, delete: if isAdmin() || isTeacher();
+    }
+
+    match /assignments/{assignmentId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdmin() || isTeacher();
+    }
+
+    match /submissions/{submissionId} {
+      allow read: if isAuthenticated() && (isOwner(resource.data.studentId) || isTeacher() || isAdmin());
+      allow create: if isAuthenticated() && isOwner(request.resource.data.studentId);
+      allow update: if isAuthenticated() && (isAdmin() || isTeacher());
+      allow delete: if isAdmin();
     }
 
     match /{path=**} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if isAdmin();
     }
   }
 }
