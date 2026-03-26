@@ -8,6 +8,8 @@ import {
   LayoutDashboard, 
   LogOut, 
   ChevronRight, 
+  ChevronLeft,
+  Shield,
   PlayCircle, 
   FileText, 
   CheckCircle2,
@@ -103,7 +105,8 @@ import { Browser } from '@capacitor/browser';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Device } from '@capacitor/device';
-import { User, Subject, Lesson, Exam, Question, Message, Role, UserStats, LeaderboardEntry, SubjectProgress, Assignment, Submission, Recommendation, Reward } from './types';
+import { supabase, SUPABASE_BUCKET } from './lib/supabase';
+import { User, Subject, Lesson, Exam, Question, Message, Role, UserStats, LeaderboardEntry, SubjectProgress, Assignment, Submission, Recommendation, Reward, Theme } from './types';
 import { getDocFromServer as testGetDocFromServer } from 'firebase/firestore';
 
 // --- Error Boundary ---
@@ -146,8 +149,28 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               إعادة تحميل الصفحة
             </button>
             {process.env.NODE_ENV === 'development' && (
-              <pre className="mt-4 p-4 bg-slate-100 dark:bg-slate-800 rounded-lg text-left text-[10px] overflow-auto max-h-40 text-red-600">
-                {this.state.error?.message || String(this.state.error)}
+              <pre className="mt-4 p-4 bg-slate-100 dark:bg-slate-800 rounded-lg text-left text-[10px] overflow-auto max-h-60 text-red-600">
+                {(() => {
+                  try {
+                    const error = this.state.error;
+                    if (!error) return 'No error details';
+                    
+                    // If it's a JSON string (from handleFirestoreError)
+                    if (typeof error.message === 'string' && error.message.startsWith('{')) {
+                      try {
+                        const parsed = JSON.parse(error.message);
+                        return JSON.stringify(parsed, null, 2);
+                      } catch {
+                        return error.message;
+                      }
+                    }
+                    
+                    // Otherwise stringify the whole error object including non-enumerable props
+                    return JSON.stringify(error, Object.getOwnPropertyNames(error), 2);
+                  } catch (e) {
+                    return 'Failed to stringify error: ' + String(e);
+                  }
+                })()}
               </pre>
             )}
           </div>
@@ -163,35 +186,46 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 const StudyAssistant = ({ user, context }: { user: User, context?: string }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [message, setMessage] = useState('');
-  const [chat, setChat] = useState<{ role: 'user' | 'ai', text: string }[]>([]);
+  const [chatHistory, setChatHistory] = useState<{ role: 'user' | 'model', parts: [{ text: string }] }[]>([]);
   const [loading, setLoading] = useState(false);
+  const [chatSession, setChatSession] = useState<any>(null);
+
+  useEffect(() => {
+    if (isOpen && !chatSession) {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (apiKey) {
+        const ai = new GoogleGenAI({ apiKey });
+        const session = ai.chats.create({
+          model: "gemini-3-flash-preview",
+          config: {
+            systemInstruction: `أنت مساعد دراسي ذكي لمنصة "ستار إديو" (StarEdu).
+            اسم المستخدم: ${user.full_name || 'طالب'}.
+            دوره: ${user.role === 'student' ? 'طالب' : user.role === 'teacher' ? 'مدرس' : 'مسؤول'}.
+            الصف: ${user.grade || 'غير محدد'}.
+            السياق الحالي: ${context || 'دراسة عامة'}.
+            أجب باللغة العربية بأسلوب مشجع وواضح. ساعد في حل المسائل، شرح المفاهيم، أو تنظيم الدراسة.`,
+          },
+        });
+        setChatSession(session);
+      }
+    }
+  }, [isOpen, chatSession, user, context]);
 
   const handleSend = async () => {
-    if (!message.trim()) return;
+    if (!message.trim() || !chatSession) return;
     const userMsg = message;
     setMessage('');
-    setChat(prev => [...prev, { role: 'user', text: userMsg }]);
+    
+    const newHistory: any = [...chatHistory, { role: 'user', parts: [{ text: userMsg }] }];
+    setChatHistory(newHistory);
     setLoading(true);
 
     try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        setChat(prev => [...prev, { role: 'ai', text: 'عذراً، مفتاح API للذكاء الاصطناعي غير متوفر حالياً. يرجى المحاولة لاحقاً.' }]);
-        setLoading(false);
-        return;
-      }
-      const ai = new GoogleGenAI({ apiKey });
-      const model = ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [
-          { role: 'user', parts: [{ text: `You are a helpful study assistant for a student. Context: ${context || 'General study'}. User message: ${userMsg}` }] }
-        ]
-      });
-      const response = await model;
-      setChat(prev => [...prev, { role: 'ai', text: response.text || 'عذراً، لم أتمكن من معالجة طلبك.' }]);
+      const response = await chatSession.sendMessage({ message: userMsg });
+      setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: response.text || 'عذراً، لم أتمكن من معالجة طلبك.' }] }]);
     } catch (err) {
       console.error(err);
-      setChat(prev => [...prev, { role: 'ai', text: 'حدث خطأ أثناء الاتصال بالذكاء الاصطناعي.' }]);
+      setChatHistory(prev => [...prev, { role: 'model', parts: [{ text: 'حدث خطأ أثناء الاتصال بالذكاء الاصطناعي. يرجى المحاولة لاحقاً.' }] }]);
     } finally {
       setLoading(false);
     }
@@ -217,7 +251,7 @@ const StudyAssistant = ({ user, context }: { user: User, context?: string }) => 
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {chat.length === 0 && (
+              {chatHistory.length === 0 && (
                 <div className="text-center py-8">
                   <div className="w-16 h-16 bg-indigo-50 dark:bg-indigo-900/20 rounded-full flex items-center justify-center text-indigo-600 dark:text-indigo-400 mx-auto mb-4">
                     <MessageSquare size={32} />
@@ -225,14 +259,14 @@ const StudyAssistant = ({ user, context }: { user: User, context?: string }) => 
                   <p className="text-slate-500 dark:text-slate-400 text-sm">أهلاً بك! كيف يمكنني مساعدتك في دراستك اليوم؟</p>
                 </div>
               )}
-              {chat.map((msg, i) => (
+              {chatHistory.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div className={`max-w-[80%] p-3 rounded-2xl text-sm ${
                     msg.role === 'user' 
                       ? 'bg-indigo-600 text-white rounded-br-none' 
                       : 'bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-bl-none'
                   }`}>
-                    {msg.text}
+                    {msg.parts[0].text}
                   </div>
                 </div>
               ))}
@@ -259,8 +293,8 @@ const StudyAssistant = ({ user, context }: { user: User, context?: string }) => 
               />
               <button 
                 onClick={handleSend}
-                disabled={loading}
-                className="bg-indigo-600 text-white p-2 rounded-xl hover:bg-indigo-700 transition-colors"
+                disabled={loading || !chatSession}
+                className="bg-indigo-600 text-white p-2 rounded-xl hover:bg-indigo-700 transition-colors disabled:opacity-50"
               >
                 <Send size={20} />
               </button>
@@ -680,7 +714,7 @@ const AddAssignmentModal = ({ onClose, onSave, user }: { onClose: () => void, on
             <input 
               type="text" 
               required
-              value={formData.title}
+              value={formData.title || ''}
               onChange={e => setFormData({...formData, title: e.target.value})}
               className="w-full px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
             />
@@ -689,7 +723,7 @@ const AddAssignmentModal = ({ onClose, onSave, user }: { onClose: () => void, on
             <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">الوصف</label>
             <textarea 
               required
-              value={formData.description}
+              value={formData.description || ''}
               onChange={e => setFormData({...formData, description: e.target.value})}
               className="w-full px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all h-32"
             />
@@ -699,7 +733,7 @@ const AddAssignmentModal = ({ onClose, onSave, user }: { onClose: () => void, on
               <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">الصف</label>
               <select 
                 required
-                value={formData.grade}
+                value={formData.grade || ''}
                 onChange={e => setFormData({...formData, grade: e.target.value})}
                 className="w-full px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
               >
@@ -711,7 +745,7 @@ const AddAssignmentModal = ({ onClose, onSave, user }: { onClose: () => void, on
               <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-2">الشعبة</label>
               <select 
                 required
-                value={formData.section}
+                value={formData.section || ''}
                 onChange={e => setFormData({...formData, section: e.target.value})}
                 className="w-full px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
               >
@@ -726,7 +760,7 @@ const AddAssignmentModal = ({ onClose, onSave, user }: { onClose: () => void, on
               <input 
                 type="date" 
                 required
-                value={formData.due_date}
+                value={formData.due_date || ''}
                 onChange={e => setFormData({...formData, due_date: e.target.value})}
                 className="w-full px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
               />
@@ -736,8 +770,11 @@ const AddAssignmentModal = ({ onClose, onSave, user }: { onClose: () => void, on
               <input 
                 type="number" 
                 required
-                value={formData.points}
-                onChange={e => setFormData({...formData, points: parseInt(e.target.value)})}
+                value={isNaN(formData.points) ? '' : formData.points}
+                onChange={e => {
+                  const val = e.target.value === '' ? NaN : parseInt(e.target.value);
+                  setFormData({...formData, points: val});
+                }}
                 className="w-full px-5 py-3 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
               />
             </div>
@@ -1534,29 +1571,59 @@ const PaymentView = ({ user }: { user: User }) => {
   }, [user.id]);
 
   const handlePayment = async () => {
+    if (!amount || parseInt(amount) <= 0) {
+      alert('يرجى إدخال مبلغ صحيح');
+      return;
+    }
+
     setLoading(true);
     try {
-      const paymentData = {
-        userId: user.id,
-        amount: parseInt(amount),
-        method,
-        status: 'completed', // Simulated success
-        transaction_id: 'TXN-' + Math.random().toString(36).substr(2, 9),
-        createdAt: new Date().toISOString()
-      };
-      
-      await addDoc(collection(db, 'payments'), paymentData);
-      
-      // Update user points/balance if needed
-      const userRef = doc(db, 'users', user.id);
-      await updateDoc(userRef, {
-        points: (user.points || 0) + (parseInt(amount) / 100) // Example conversion
+      const endpoint = method === 'zain_cash' ? '/api/payments/zain-cash/initiate' : '/api/payments/mastercard/initiate';
+      const res = await fetch(getBackendUrl() + endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: parseInt(amount), userId: user.id })
       });
       
-      alert('تمت عملية الدفع بنجاح!');
-      fetchHistory();
+      const data = await res.json();
+      
+      if (data.success) {
+        // In a real app, we would redirect to data.redirectUrl
+        // window.location.href = data.redirectUrl;
+        
+        // For this demo, we simulate the verification after "payment"
+        const verifyRes = await fetch(getBackendUrl() + '/api/payments/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ transactionId: data.transactionId, status: 'success' })
+        });
+        
+        const verifyData = await verifyRes.json();
+        
+        if (verifyData.success) {
+          const paymentData = {
+            userId: user.id,
+            amount: parseInt(amount),
+            method,
+            status: 'completed',
+            transaction_id: data.transactionId,
+            createdAt: new Date().toISOString()
+          };
+          
+          await addDoc(collection(db, 'payments'), paymentData);
+          
+          const userRef = doc(db, 'users', user.id);
+          await updateDoc(userRef, {
+            points: (user.points || 0) + (parseInt(amount) / 100)
+          });
+          
+          alert('تمت عملية الدفع بنجاح!');
+          fetchHistory();
+        }
+      }
     } catch (err) {
       console.error(err);
+      alert('فشلت عملية الدفع. يرجى المحاولة مرة أخرى.');
     } finally {
       setLoading(false);
     }
@@ -1670,173 +1737,149 @@ const PaymentView = ({ user }: { user: User }) => {
   );
 };
 
-const GoogleDriveSetupGuide = () => {
-  const currentOrigin = window.location.origin;
-  const callbackPath = '/auth/google/callback';
-  const redirectUri = `${currentOrigin}${callbackPath}`;
-
+const SupabaseSetupGuide = () => {
   return (
-    <div className="p-6 bg-white dark:bg-slate-900 rounded-3xl border border-amber-200 dark:border-amber-900/30 shadow-lg">
-      <div className="flex items-center gap-3 mb-6 text-amber-600">
-        <AlertCircle size={24} />
-        <h3 className="text-xl font-bold">إعداد Google Drive مطلوب</h3>
+    <div className="bg-emerald-50 dark:bg-emerald-900/20 p-6 rounded-3xl border border-emerald-100 dark:border-emerald-800 space-y-4">
+      <div className="flex items-center gap-3 text-emerald-600 dark:text-emerald-400">
+        <Shield size={24} />
+        <h4 className="font-bold text-lg">دليل إعداد Supabase Storage</h4>
       </div>
-      
-      <div className="space-y-6 text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-        <section>
-          <p className="font-bold text-slate-900 dark:text-slate-100 mb-2">1. إنشاء بيانات الاعتماد:</p>
-          <p>اذهب إلى <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">Google Cloud Console</a> وقم بإنشاء "OAuth 2.0 Client ID" من نوع "Web Application".</p>
-        </section>
-
-        <section>
-          <p className="font-bold text-slate-900 dark:text-slate-100 mb-2">2. إضافة رابط إعادة التوجيه (Redirect URI):</p>
-          <p className="mb-2">أضف الرابط التالي في قسم "Authorized redirect URIs":</p>
-          <div className="bg-slate-50 dark:bg-slate-800 p-3 rounded-xl font-mono text-[10px] break-all">
-            <p className="select-all text-indigo-600 font-bold">{redirectUri}</p>
-          </div>
-          <p className="mt-2 text-[10px] text-red-500 font-bold">تنبيه: يجب أن يتطابق هذا الرابط تماماً في إعدادات Google لتجنب خطأ "Redirect URI mismatch".</p>
-        </section>
-
-        <section>
-          <p className="font-bold text-slate-900 dark:text-slate-100 mb-2">3. إضافة الأسرار (Secrets):</p>
-          <p>افتح الإعدادات (⚙️) في AI Studio وأضف الأسرار التالية:</p>
-          <ul className="list-disc list-inside space-y-1 mt-2">
-            <li><code className="bg-slate-100 dark:bg-slate-800 px-1 rounded">GOOGLE_CLIENT_ID</code></li>
-            <li><code className="bg-slate-100 dark:bg-slate-800 px-1 rounded">GOOGLE_CLIENT_SECRET</code></li>
-            <li><code className="bg-slate-100 dark:bg-slate-800 px-1 rounded">APP_URL</code> (القيمة: <span className="font-mono text-[10px]">{currentOrigin}</span>)</li>
-          </ul>
-        </section>
-
-        <section className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-2xl border border-blue-100 dark:border-blue-800/30">
-          <p className="font-bold text-blue-800 dark:text-blue-400 mb-2 flex items-center gap-2">
-            <Info size={16} /> نصائح هامة:
-          </p>
-          <ul className="list-decimal list-inside space-y-2 text-[11px]">
-            <li>تأكد من تفعيل <b>Google Drive API</b> في مكتبة واجهات البرمجة (API Library).</li>
-            <li>في شاشة موافقة OAuth (OAuth Consent Screen)، أضف نطاقات (Scopes) الوصول للملفات: <code>.../auth/drive.file</code> و <code>.../auth/drive.readonly</code>.</li>
-            <li>إذا كان التطبيق في وضع "Testing"، يجب إضافة بريدك الإلكتروني كـ "Test User".</li>
-          </ul>
-        </section>
+      <div className="space-y-3 text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+        <p>لحل مشكلة سياسة الأمان (RLS)، يرجى اتباع الخطوات التالية في لوحة تحكم Supabase:</p>
+        <ol className="list-decimal list-inside space-y-2">
+          <li>اذهب إلى <strong>Storage</strong> في القائمة الجانبية.</li>
+          <li>تأكد من وجود Bucket باسم <code className="bg-emerald-100 dark:bg-emerald-800 px-1 rounded">files</code>.</li>
+          <li>اذهب إلى <strong>Policies</strong> للـ Bucket المذكور.</li>
+          <li>أضف سياسة جديدة (New Policy) واختر <strong>Full customization</strong>.</li>
+          <li>امنح صلاحيات <code className="font-bold">INSERT</code> و <code className="font-bold">SELECT</code> للمستخدمين المسجلين (Authenticated).</li>
+          <li>استخدم التعبير التالي للتحقق من المجلد: <code className="bg-slate-100 dark:bg-slate-800 p-1 rounded block mt-1">auth.uid()::text = (storage.foldername(name))[1]</code></li>
+        </ol>
       </div>
     </div>
   );
 };
 
-const GoogleDrivePicker = ({ user, onSelect }: { user: User; onSelect: (file: any) => void }) => {
-  const hasKeys = Boolean(process.env.GOOGLE_CLIENT_ID);
+const SupabaseFilePicker = ({ user, onSelect }: { user: User; onSelect: (file: any) => void }) => {
   const [files, setFiles] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
 
   const fetchFiles = async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(getBackendUrl() + `/api/google/drive/files?userId=${user.id}`, { credentials: 'include' });
-      if (res.ok) {
-        const data = await res.json();
-        setFiles(data);
-      } else {
-        const err = await res.json();
-        setError(err.error || 'Failed to fetch files');
+      const { data, error } = await supabase.storage.from(SUPABASE_BUCKET).list(user.id);
+      if (error) {
+        if (error.message.includes('Bucket not found')) {
+          throw new Error(`لم يتم العثور على مساحة التخزين (Bucket: ${SUPABASE_BUCKET}). يرجى إنشاؤها في Supabase Storage.`);
+        }
+        throw error;
       }
-    } catch (err) {
-      setError('Connection error');
+      
+      const filesWithUrls = await Promise.all((data || []).map(async (file) => {
+        const { data: { publicUrl } } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(`${user.id}/${file.name}`);
+        return { ...file, publicUrl };
+      }));
+      
+      setFiles(filesWithUrls);
+    } catch (err: any) {
+      console.error('Error fetching files from Supabase:', err);
+      setError(err.message || 'Failed to fetch files');
+      if (err.message.includes('row-level security policy')) {
+        setShowGuide(true);
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  const handleConnect = async () => {
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    setError(null);
     try {
-      const res = await fetch(getBackendUrl() + '/api/auth/google/drive/url', { credentials: 'include' });
-      const { url } = await res.json();
-      handleOpenUrl(url);
-    } catch (err) {
-      console.error(err);
+      const fileName = `${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
+      const { error } = await supabase.storage.from(SUPABASE_BUCKET).upload(`${user.id}/${fileName}`, file);
+      if (error) {
+        if (error.message.includes('Bucket not found')) {
+          throw new Error(`لم يتم العثور على مساحة التخزين (Bucket: ${SUPABASE_BUCKET}). يرجى إنشاؤها في Supabase Storage.`);
+        }
+        if (error.message.includes('row-level security policy')) {
+          setShowGuide(true);
+          throw new Error('فشل الرفع بسبب سياسة الأمان (RLS). يرجى التأكد من تفعيل سياسات الوصول (Policies) للمجلد في Supabase Storage.');
+        }
+        throw error;
+      }
+      
+      await fetchFiles();
+    } catch (err: any) {
+      console.error('Error uploading to Supabase:', err);
+      setError(err.message || 'Upload failed');
+    } finally {
+      setUploading(false);
     }
   };
 
   useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === 'GOOGLE_DRIVE_AUTH_SUCCESS') {
-        fetchFiles();
-      }
-    };
-    window.addEventListener('message', handleMessage);
-
-    // For native apps, we can't use postMessage from a system browser.
-    // Instead, we refresh when the app is resumed.
-    let appStateListener: any;
-    if (Capacitor.isNativePlatform()) {
-      appStateListener = CapacitorApp.addListener('appStateChange', ({ isActive }) => {
-        if (isActive) {
-          fetchFiles();
-        }
-      });
-    }
-
-    return () => {
-      window.removeEventListener('message', handleMessage);
-      if (appStateListener) appStateListener.remove();
-    };
+    fetchFiles();
   }, []);
 
   return (
-    <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700">
-      {!hasKeys ? (
-        <GoogleDriveSetupGuide />
-      ) : (
-        <>
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center text-white">
-                <Link size={18} />
-              </div>
-              <h4 className="font-bold text-slate-900 dark:text-slate-100">Google Drive</h4>
-            </div>
-            {error ? (
-              <button 
-                onClick={handleConnect}
-                className="text-xs font-bold text-blue-600 hover:underline"
-              >
-                ربط الحساب
-              </button>
-            ) : (
-              <button 
-                onClick={fetchFiles}
-                className="text-xs font-bold text-slate-500 hover:text-indigo-600"
-              >
-                تحديث القائمة
-              </button>
-            )}
+    <div className="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center text-white">
+            <Cloud size={18} />
           </div>
+          <h4 className="font-bold text-slate-900 dark:text-slate-100">Supabase Storage</h4>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="cursor-pointer text-xs font-bold text-emerald-600 hover:underline">
+            {uploading ? 'جاري الرفع...' : 'رفع ملف'}
+            <input type="file" className="hidden" onChange={handleUpload} disabled={uploading} />
+          </label>
+          <button 
+            onClick={fetchFiles}
+            className="text-xs font-bold text-slate-500 hover:text-indigo-600"
+          >
+            تحديث
+          </button>
+        </div>
+      </div>
 
-          {loading ? (
-            <div className="flex justify-center py-4">
-              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"></div>
-            </div>
-          ) : error ? (
-            <p className="text-xs text-slate-500 text-center py-2">{error === 'Google Drive not connected' ? 'قم بربط حسابك للوصول إلى ملفاتك' : error}</p>
-          ) : files.length === 0 ? (
-            <p className="text-xs text-slate-500 text-center py-2">لا توجد ملفات متاحة.</p>
-          ) : (
-            <div className="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
-              {files.map((file) => (
-                <div 
-                  key={file.id}
-                  onClick={() => onSelect(file)}
-                  className="flex items-center gap-3 p-2 hover:bg-white dark:hover:bg-slate-800 rounded-xl cursor-pointer border border-transparent hover:border-slate-200 dark:hover:border-slate-700 transition-all group text-right"
-                >
-                  <img src={file.iconLink} alt="" className="w-4 h-4" referrerPolicy="no-referrer" />
-                  <span className="text-xs text-slate-700 dark:text-slate-300 truncate flex-1">{file.name}</span>
-                  <Plus size={14} className="text-slate-300 group-hover:text-indigo-600" />
-                </div>
-              ))}
-            </div>
-          )}
-        </>
+      {showGuide && <SupabaseSetupGuide />}
+
+      {error && !showGuide && (
+        <div className="p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-xs rounded-xl border border-red-100 dark:border-red-800">
+          {error}
+        </div>
       )}
+
+      <div className="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+        {loading ? (
+          <div className="text-center py-4 text-slate-400 text-xs">جاري التحميل...</div>
+        ) : files.length === 0 ? (
+          <div className="text-center py-4 text-slate-400 text-xs">لا توجد ملفات مرفوعة.</div>
+        ) : (
+          files.map(file => (
+            <div 
+              key={file.id}
+              onClick={() => onSelect({ name: file.name, url: file.publicUrl })}
+              className="flex items-center justify-between p-2 hover:bg-white dark:hover:bg-slate-800 rounded-xl cursor-pointer group transition-all border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <FileText size={14} className="text-slate-400 group-hover:text-emerald-500" />
+                <span className="text-xs text-slate-600 dark:text-slate-400 truncate">{file.name}</span>
+              </div>
+              <ChevronLeft size={14} className="text-slate-300 group-hover:text-emerald-500 transform rotate-180" />
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 };
@@ -2010,10 +2053,9 @@ const OneDrivePicker = ({ user, onSelect }: { user: User; onSelect: (file: any) 
   );
 };
 
-const SettingsView = ({ user }: { user: User }) => {
+const SettingsView = ({ user, theme, setTheme }: { user: User, theme: Theme, setTheme: (t: Theme) => void }) => {
   const [settings, setSettings] = useState({
     notifications: true,
-    darkMode: localStorage.getItem('theme') === 'dark',
     language: 'ar',
     emailUpdates: true,
   });
@@ -2053,6 +2095,32 @@ const SettingsView = ({ user }: { user: User }) => {
           </div>
 
           <div className="pt-8 border-t border-slate-100 dark:border-slate-800">
+            <h3 className="font-bold text-slate-900 dark:text-slate-100 mb-4">المظهر (الثيم)</h3>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {[
+                { id: 'light', label: 'نهاري', icon: Sun },
+                { id: 'dark', label: 'ليلي', icon: Moon },
+                { id: 'system', label: 'تلقائي', icon: Layout },
+                { id: 'blue', label: 'أزرق', icon: Cloud },
+                { id: 'emerald', label: 'زمردي', icon: Zap }
+              ].map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setTheme(t.id as Theme)}
+                  className={`p-4 rounded-2xl border-2 transition-all flex flex-col items-center gap-2 ${
+                    theme === t.id 
+                      ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600' 
+                      : 'border-slate-100 dark:border-slate-800 text-slate-400 hover:border-slate-200 dark:hover:border-slate-700'
+                  }`}
+                >
+                  <t.icon size={20} />
+                  <span className="text-xs font-bold">{t.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="pt-8 border-t border-slate-100 dark:border-slate-800">
             <h3 className="font-bold text-slate-900 dark:text-slate-100 mb-4">اللغة</h3>
             <div className="grid grid-cols-2 gap-4">
               <button className="p-4 rounded-2xl border-2 border-indigo-600 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 font-bold text-sm">العربية</button>
@@ -2064,11 +2132,11 @@ const SettingsView = ({ user }: { user: User }) => {
 
       <div className="bg-white dark:bg-slate-900 rounded-[3rem] border border-slate-200 dark:border-slate-800 p-10 shadow-sm transition-colors duration-300">
         <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100 mb-6 flex items-center gap-2">
-          <Link size={24} className="text-blue-600" />
-          الخدمات السحابية
+          <Cloud size={24} className="text-emerald-600" />
+          مساحة التخزين (Supabase)
         </h3>
-        <p className="text-sm text-slate-500 mb-6">اربط حسابك في Google Drive للوصول السريع إلى ملفاتك ومشاركتها.</p>
-        <GoogleDrivePicker user={user} onSelect={(file) => console.log('Selected file:', file)} />
+        <p className="text-sm text-slate-500 mb-6">قم برفع ملفاتك وإدارتها مباشرة عبر مساحة التخزين السحابية.</p>
+        <SupabaseFilePicker user={user} onSelect={(file) => console.log('Selected file:', file)} />
       </div>
     </div>
   );
@@ -2125,32 +2193,8 @@ const ProfileView = ({ user, setActiveTab }: { user: User, setActiveTab: (t: str
           </div>
 
           <div className="mt-12">
-            <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100 mb-6">الحسابات المرتبطة</h3>
-            <div className="p-6 bg-white dark:bg-slate-800 rounded-3xl border border-slate-200 dark:border-slate-700 flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-blue-500 rounded-2xl flex items-center justify-center text-white">
-                  <Link size={24} />
-                </div>
-                <div>
-                  <h4 className="font-bold text-slate-900 dark:text-slate-100">Google Drive</h4>
-                  <p className="text-xs text-slate-500">للوصول السريع إلى ملفاتك ومشاركتها في الدروس.</p>
-                </div>
-              </div>
-              <button 
-                onClick={async () => {
-                  try {
-                    const res = await fetch(getBackendUrl() + '/api/auth/google/drive/url', { credentials: 'include' });
-                    const { url } = await res.json();
-                    handleOpenUrl(url);
-                  } catch (err) {
-                    console.error(err);
-                  }
-                }}
-                className="px-6 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold hover:bg-blue-700 transition-all"
-              >
-                ربط الحساب
-              </button>
-            </div>
+            <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100 mb-6">مساحة التخزين</h3>
+            <SupabaseFilePicker user={user} onSelect={(file) => console.log('Selected file:', file)} />
           </div>
         </div>
       </div>
@@ -2907,10 +2951,10 @@ const StudentDashboard = ({ user, setActiveTab }: { user: User, setActiveTab: (t
 
           {stats && <RewardsStore user={user} stats={stats} onPurchase={fetchData} />}
           
-          <GoogleDrivePicker 
+          <SupabaseFilePicker 
             user={user} 
             onSelect={(file) => {
-              handleOpenUrl(file.webViewLink);
+              handleOpenUrl(file.url);
             }} 
           />
         </div>
@@ -4446,14 +4490,14 @@ const AdminUsersView = ({ currentUser }: { currentUser: User }) => {
           <input 
             type="text"
             placeholder="بحث بالاسم أو اسم المستخدم..."
-            value={searchTerm}
+            value={searchTerm || ''}
             onChange={e => setSearchTerm(e.target.value)}
             className="w-full pr-10 pl-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
           />
         </div>
         <div className="flex gap-2">
           <select 
-            value={roleFilter}
+            value={roleFilter || 'all'}
             onChange={e => setRoleFilter(e.target.value as any)}
             className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
           >
@@ -5280,7 +5324,7 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
                       type="button"
                       onClick={() => {
                         const options = type === 'mcq' ? ['', ''] : type === 'tf' ? ['صح', 'خطأ'] : [];
-                        setNewQuestion({...newQuestion, type, options, correctAnswer: type === 'tf' ? 'صح' : ''});
+                        setNewQuestion({...newQuestion, type, options, correct_answer: type === 'tf' ? 'صح' : ''});
                       }}
                       className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
                         newQuestion.type === type 
@@ -5312,7 +5356,7 @@ const ExamManagementView = ({ subject }: { subject: Subject }) => {
                     <label className="block text-sm font-bold text-slate-700 dark:text-slate-300">الخيارات</label>
                     {newQuestion.options.map((opt, idx) => (
                       <div key={idx} className="flex items-center gap-2">
-                        <div className={`w-4 h-4 rounded-full border-2 ${newQuestion.correctAnswer === opt && opt !== '' ? 'border-indigo-600 bg-indigo-600' : 'border-slate-300'}`} />
+                        <div className={`w-4 h-4 rounded-full border-2 ${newQuestion.correct_answer === opt && opt !== '' ? 'border-indigo-600 bg-indigo-600' : 'border-slate-300'}`} />
                         <input 
                           type="text" required
                           value={opt || ''}
@@ -5561,22 +5605,23 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
         finalUrl = await uploadFileWithProgress(path, selectedFile, (progress) => {
           setUploadProgress(Number(progress.toFixed(1)));
         });
-      } else if (newLesson.sourceType === 'googleDrive' && selectedFile) {
-        // Handle upload to Google Drive if a file is selected
-        const formData = new FormData();
-        formData.append('file', selectedFile);
-        const res = await fetch(getBackendUrl() + '/api/google/drive/upload', { 
-          method: 'POST', 
-          body: formData,
-          credentials: 'include'
-        });
-        if (res.ok) {
-          const data = await res.json();
-          finalUrl = data.webViewLink;
-        } else {
-          throw new Error('Google Drive upload failed');
+      } else if (newLesson.sourceType === 'supabase' && selectedFile) {
+        // Handle upload to Supabase if a file is selected
+        const fileName = `${Date.now()}_${selectedFile.name.replace(/\s+/g, '_')}`;
+        const { error } = await supabase.storage.from(SUPABASE_BUCKET).upload(`${user.id}/${fileName}`, selectedFile);
+        if (error) {
+          if (error.message.includes('Bucket not found')) {
+            throw new Error(`لم يتم العثور على مساحة التخزين (Bucket: ${SUPABASE_BUCKET}). يرجى إنشاؤها في Supabase Storage.`);
+          }
+          if (error.message.includes('row-level security policy')) {
+            throw new Error('فشل الرفع بسبب سياسة الأمان (RLS). يرجى التأكد من تفعيل سياسات الوصول (Policies) للمجلد في Supabase Storage.');
+          }
+          throw error;
         }
-      } else if (newLesson.sourceType === 'oneDrive' && selectedFile) {
+        
+        const { data: { publicUrl } } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(`${user.id}/${fileName}`);
+        finalUrl = publicUrl;
+      } else if (newLesson.sourceType === 'onedrive' && selectedFile) {
         // Handle upload to OneDrive if a file is selected
         const formData = new FormData();
         formData.append('file', selectedFile);
@@ -5608,9 +5653,9 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
       setNewLesson({ title: '', content: '', type: 'video', url: '', sourceType: 'url' });
       setSelectedFile(null);
       fetchLessons(selectedSubject.id);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to add lesson", err);
-      alert('فشل إضافة الدرس. يرجى المحاولة مرة أخرى.');
+      alert(err.message || 'فشل إضافة الدرس. يرجى المحاولة مرة أخرى.');
     } finally {
       setIsUploading(false);
       setUploadProgress(0);
@@ -5797,8 +5842,8 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
                       >
                         <option value="url">رابط خارجي</option>
                         <option value="file">رفع ملف من الجهاز</option>
-                        <option value="googleDrive">Google Drive</option>
-                        <option value="oneDrive">OneDrive</option>
+                        <option value="supabase">Supabase Storage</option>
+                        <option value="onedrive">OneDrive</option>
                       </select>
                     </div>
                     <div className="md:col-span-2">
@@ -5822,12 +5867,12 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
                             className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                           />
                         </>
-                      ) : newLesson.sourceType === 'googleDrive' ? (
+                      ) : newLesson.sourceType === 'supabase' ? (
                         <div className="space-y-3">
-                          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Google Drive</label>
+                          <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Supabase Storage</label>
                           <div className="grid grid-cols-1 gap-4">
                             <div className="p-4 border border-dashed border-slate-200 dark:border-slate-700 rounded-2xl">
-                              <p className="text-xs text-slate-500 mb-2">رفع ملف جديد إلى Google Drive:</p>
+                              <p className="text-xs text-slate-500 mb-2">رفع ملف جديد إلى Supabase:</p>
                               <input 
                                 type="file"
                                 onChange={e => setSelectedFile(e.target.files?.[0] || null)}
@@ -5842,10 +5887,10 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
                                 <span className="bg-white dark:bg-slate-900 px-2 text-slate-500">أو اختر من ملفاتك</span>
                               </div>
                             </div>
-                            <GoogleDrivePicker 
+                            <SupabaseFilePicker 
                               user={user} 
                               onSelect={(file) => {
-                                setNewLesson({ ...newLesson, url: file.webViewLink, title: newLesson.title || file.name });
+                                setNewLesson({ ...newLesson, url: file.url, title: newLesson.title || file.name });
                                 setSelectedFile(null);
                               }} 
                             />
@@ -5857,7 +5902,7 @@ const CurriculumManagementView = ({ user }: { user: User }) => {
                             </div>
                           )}
                         </div>
-                      ) : newLesson.sourceType === 'oneDrive' ? (
+                      ) : newLesson.sourceType === 'onedrive' ? (
                         <div className="space-y-3">
                           <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">OneDrive</label>
                           <div className="grid grid-cols-1 gap-4">
@@ -6046,6 +6091,11 @@ const GradesView = ({ user }: { user: User }) => {
       return;
     }
 
+    if (newContent.sourceType === 'supabase' && !selectedFile) {
+      alert("يرجى اختيار ملف للرفع إلى Supabase.");
+      return;
+    }
+
     setIsUploading(true);
     setUploadProgress(0);
     
@@ -6074,29 +6124,27 @@ const GradesView = ({ user }: { user: User }) => {
           setIsUploading(false);
           return;
         }
-      } else if (newContent.sourceType === 'google_drive' && selectedFile) {
+      } else if (newContent.sourceType === 'supabase' && selectedFile) {
         try {
-          console.log("Starting Google Drive upload process...");
-          const formData = new FormData();
-          formData.append('file', selectedFile);
-          
-          const res = await fetch(getBackendUrl() + '/api/google/drive/upload', {
-            method: 'POST',
-            body: formData,
-            credentials: 'include'
-          });
-          
-          if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || 'Failed to upload to Google Drive');
+          console.log("Starting Supabase upload process...");
+          const fileName = `${Date.now()}_${selectedFile.name.replace(/\s+/g, '_')}`;
+          const { error } = await supabase.storage.from(SUPABASE_BUCKET).upload(`${user.id}/${fileName}`, selectedFile);
+          if (error) {
+            if (error.message.includes('Bucket not found')) {
+              throw new Error(`لم يتم العثور على مساحة التخزين (Bucket: ${SUPABASE_BUCKET}). يرجى إنشاؤها في Supabase Storage.`);
+            }
+            if (error.message.includes('row-level security policy')) {
+              throw new Error('فشل الرفع بسبب سياسة الأمان (RLS). يرجى التأكد من تفعيل سياسات الوصول (Policies) للمجلد في Supabase Storage.');
+            }
+            throw error;
           }
           
-          const data = await res.json();
-          finalUrl = data.webViewLink;
-          console.log("Google Drive upload finished successfully, URL:", finalUrl);
+          const { data: { publicUrl } } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(`${user.id}/${fileName}`);
+          finalUrl = publicUrl;
+          console.log("Supabase upload finished successfully, URL:", finalUrl);
         } catch (uploadErr: any) {
-          console.error("Google Drive upload failed:", uploadErr);
-          alert(`فشل الرفع إلى Google Drive: ${uploadErr.message}`);
+          console.error("Supabase upload failed:", uploadErr);
+          alert(`فشل الرفع إلى Supabase: ${uploadErr.message}`);
           setIsUploading(false);
           return;
         }
@@ -6377,8 +6425,8 @@ const GradesView = ({ user }: { user: User }) => {
               >
                 <option value="url">رابط خارجي</option>
                 <option value="file">رفع ملف من الجهاز (Firebase)</option>
-                <option value="google_drive">رفع إلى Google Drive</option>
-                <option value="google_drive_pick">اختيار من Google Drive</option>
+                <option value="supabase">رفع إلى Supabase</option>
+                <option value="supabase_pick">اختيار من Supabase</option>
                 <option value="onedrive">رفع إلى OneDrive</option>
                 <option value="onedrive_pick">اختيار من OneDrive</option>
               </select>
@@ -6396,15 +6444,15 @@ const GradesView = ({ user }: { user: User }) => {
                     placeholder="رابط الملف أو الفيديو أو الامتحان"
                   />
                 </>
-              ) : newContent.sourceType === 'google_drive_pick' ? (
+              ) : newContent.sourceType === 'supabase_pick' ? (
                 <div className="space-y-2">
-                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">اختر من ملفات Google Drive</label>
-                  <GoogleDrivePicker 
+                  <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">اختر من ملفات Supabase</label>
+                  <SupabaseFilePicker 
                     user={user} 
                     onSelect={(file: any) => {
                       setNewContent({
                         ...newContent,
-                        url: file.webViewLink,
+                        url: file.url,
                         title: newContent.title || file.name
                       });
                     }} 
@@ -6433,7 +6481,7 @@ const GradesView = ({ user }: { user: User }) => {
               ) : (
                 <>
                   <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    {newContent.sourceType === 'google_drive' ? 'اختر الملف للرفع إلى Google Drive' : 
+                    {newContent.sourceType === 'supabase' ? 'اختر الملف للرفع إلى Supabase' : 
                      newContent.sourceType === 'onedrive' ? 'اختر الملف للرفع إلى OneDrive' : 'اختر الملف'}
                   </label>
                   <input 
@@ -6442,8 +6490,8 @@ const GradesView = ({ user }: { user: User }) => {
                     onChange={e => setSelectedFile(e.target.files?.[0] || null)}
                     className="w-full px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300"
                   />
-                  {newContent.sourceType === 'google_drive' && (
-                    <p className="text-[10px] text-slate-500 mt-1">ملاحظة: سيتم رفع الملف إلى حساب Google Drive المرتبط.</p>
+                  {newContent.sourceType === 'supabase' && (
+                    <p className="text-[10px] text-slate-500 mt-1">ملاحظة: سيتم رفع الملف إلى مساحة تخزين Supabase.</p>
                   )}
                 </>
               )}
@@ -6563,30 +6611,55 @@ export default function App() {
     { id: 2, title: 'تحدي جديد', message: 'تمت إضافة تحدي الأسبوع الجديد. شارك الآن!', time: 'منذ ساعة', read: false, type: 'challenge' },
     { id: 3, title: 'تقييم الواجب', message: 'تم تقييم واجب الرياضيات الخاص بك. الدرجة: 95/100', time: 'منذ ساعتين', read: true, type: 'grade' },
   ]);
-  const [darkMode, setDarkMode] = useState(() => {
+  const [theme, setTheme] = useState<Theme>(() => {
     try {
       if (typeof window !== 'undefined') {
-        return localStorage.getItem('darkMode') === 'true' || 
-               window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const savedTheme = localStorage.getItem('theme') as Theme;
+        return savedTheme || 'system';
       }
     } catch (e) {
       console.error('LocalStorage access failed:', e);
     }
-    return false;
+    return 'system';
   });
 
   useEffect(() => {
-    if (darkMode) {
-      document.documentElement.classList.add('dark');
+    const root = document.documentElement;
+    const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    
+    if (isDark) {
+      root.classList.add('dark');
     } else {
-      document.documentElement.classList.remove('dark');
+      root.classList.remove('dark');
     }
+
+    if (theme === 'blue' || theme === 'emerald') {
+      root.setAttribute('data-theme', theme);
+    } else {
+      root.removeAttribute('data-theme');
+    }
+
     try {
-      localStorage.setItem('darkMode', darkMode.toString());
+      localStorage.setItem('theme', theme);
     } catch (e) {
       console.error('LocalStorage write failed:', e);
     }
-  }, [darkMode]);
+  }, [theme]);
+
+  // Clear old mock database keys
+  useEffect(() => {
+    const oldKeys = [
+      'app_users', 'app_subjects', 'app_lessons', 'app_exams', 'app_questions',
+      'app_progress', 'app_recommendations', 'app_favorites', 'app_notifications',
+      'app_messages', 'app_assignments', 'app_submissions', 'app_rewards',
+      'app_user_rewards', 'app_badges', 'app_payments', 'app_notes', 'current_user'
+    ];
+    oldKeys.forEach(key => {
+      try {
+        localStorage.removeItem(key);
+      } catch (e) {}
+    });
+  }, []);
 
   const handleLogout = async () => {
     try {
@@ -6818,13 +6891,31 @@ export default function App() {
             </AnimatePresence>
           </div>
 
-          <button
-            onClick={() => setDarkMode(!darkMode)}
-            className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
-            aria-label="Toggle Dark Mode"
-          >
-            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-          </button>
+          <div className="relative group">
+            <button
+              className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all flex items-center gap-2"
+              aria-label="Change Theme"
+            >
+              {theme === 'dark' ? <Moon size={20} /> : theme === 'light' ? <Sun size={20} /> : theme === 'system' ? <Layout size={20} /> : theme === 'blue' ? <Cloud size={20} /> : <Zap size={20} />}
+            </button>
+            <div className="absolute left-0 mt-2 w-48 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-[70] p-2">
+              <button onClick={() => setTheme('light')} className={`w-full flex items-center gap-3 px-4 py-2 rounded-xl text-sm ${theme === 'light' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+                <Sun size={16} /> نهاري
+              </button>
+              <button onClick={() => setTheme('dark')} className={`w-full flex items-center gap-3 px-4 py-2 rounded-xl text-sm ${theme === 'dark' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+                <Moon size={16} /> ليلي
+              </button>
+              <button onClick={() => setTheme('system')} className={`w-full flex items-center gap-3 px-4 py-2 rounded-xl text-sm ${theme === 'system' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+                <Layout size={16} /> تلقائي
+              </button>
+              <button onClick={() => setTheme('blue')} className={`w-full flex items-center gap-3 px-4 py-2 rounded-xl text-sm ${theme === 'blue' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+                <Cloud size={16} /> أزرق
+              </button>
+              <button onClick={() => setTheme('emerald')} className={`w-full flex items-center gap-3 px-4 py-2 rounded-xl text-sm ${theme === 'emerald' ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+                <Zap size={16} /> زمردي
+              </button>
+            </div>
+          </div>
 
           <div className="hidden md:flex flex-col items-start">
             <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">{user.full_name}</span>
@@ -6867,7 +6958,7 @@ export default function App() {
               {activeTab === 'ai-chat' && <AIChatView user={user} />}
               {activeTab === 'chat' && <ChatView user={user} />}
               {activeTab === 'profile' && <ProfileView user={user} setActiveTab={setActiveTab} />}
-              {activeTab === 'settings' && <SettingsView user={user} />}
+              {activeTab === 'settings' && <SettingsView user={user} theme={theme} setTheme={setTheme} />}
               {activeTab === 'users' && <AdminUsersView currentUser={user} />}
               {activeTab === 'curriculum' && <CurriculumManagementView user={user} />}
               {activeTab === 'updates' && <AdminUpdatesView />}

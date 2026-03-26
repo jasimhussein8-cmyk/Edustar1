@@ -3,11 +3,9 @@ import cors from "cors";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
-import { google } from "googleapis";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import multer from "multer";
-import { Readable } from "stream";
 import axios from "axios";
 import qs from "qs";
 
@@ -23,6 +21,10 @@ async function startServer() {
   app.use(express.json());
   app.use(cookieParser());
   
+  // Multer configuration for file uploads
+  const storage = multer.memoryStorage();
+  const upload = multer({ storage });
+  
   // CORS Configuration for Android and Web
   app.use(cors({
     origin: (origin, callback) => {
@@ -32,21 +34,6 @@ async function startServer() {
     },
     credentials: true
   }));
-
-  // Google OAuth Configuration
-  const oauth2Client = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    process.env.APP_URL ? `${process.env.APP_URL}/auth/google/callback` : undefined
-  );
-
-  // Helper to get redirect URI dynamically
-  const getGoogleRedirectUri = (req: express.Request) => {
-    // For Google OAuth, we MUST use the deployed URL as the redirect URI
-    // because the callback handler is on the server.
-    const baseUrl = (process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
-    return `${baseUrl}/auth/google/callback`;
-  };
 
   // Microsoft OAuth Configuration
   const MS_CLIENT_ID = process.env.MICROSOFT_CLIENT_ID;
@@ -61,135 +48,27 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
-  // Google Auth URL
-  app.get("/api/auth/google/drive/url", (req, res) => {
-    const dynamicRedirectUri = getGoogleRedirectUri(req);
-    console.log("Generating Google Auth URL with redirect_uri:", dynamicRedirectUri);
-    
-    const scopes = [
-      'https://www.googleapis.com/auth/drive.metadata.readonly',
-      'https://www.googleapis.com/auth/drive.readonly',
-      'https://www.googleapis.com/auth/drive.file'
-    ];
-
-    const url = oauth2Client.generateAuthUrl({
-      access_type: 'offline',
-      scope: scopes,
-      prompt: 'consent',
-      redirect_uri: dynamicRedirectUri
-    });
-
-    res.json({ url });
-  });
-
-  // Google Auth Callback
-  app.get("/auth/google/callback", async (req, res) => {
-    const { code } = req.query;
-    const dynamicRedirectUri = getGoogleRedirectUri(req);
-    console.log("Handling Google Auth Callback with redirect_uri:", dynamicRedirectUri);
-
-    try {
-      const { tokens } = await oauth2Client.getToken({
-        code: code as string,
-        redirect_uri: dynamicRedirectUri
-      });
-      
-      console.log("Successfully obtained Google Drive tokens");
-      // Store tokens in a secure cookie
-      res.cookie('google_drive_tokens', JSON.stringify(tokens), {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-        maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
-      });
-
-      res.send(`
-        <html>
-          <body>
-            <script>
-              if (window.opener) {
-                window.opener.postMessage({ type: 'GOOGLE_DRIVE_AUTH_SUCCESS' }, '*');
-                window.close();
-              } else {
-                window.location.href = '/';
-              }
-            </script>
-            <p>تم ربط الحساب بنجاح. سيتم إغلاق هذه النافذة تلقائياً.</p>
-          </body>
-        </html>
-      `);
-    } catch (error: any) {
-      console.error('Error exchanging code for tokens:', error.response?.data || error.message);
-      res.status(500).send(`Authentication failed: ${error.message}`);
-    }
-  });
-
-  // Fetch Google Drive Files
-  app.get("/api/google/drive/files", async (req, res) => {
-    const tokensCookie = req.cookies.google_drive_tokens;
-    if (!tokensCookie) {
-      return res.status(401).json({ error: 'Google Drive not connected' });
-    }
-
-    try {
-      const tokens = JSON.parse(tokensCookie);
-      oauth2Client.setCredentials(tokens);
-
-      const drive = google.drive({ version: 'v3', auth: oauth2Client });
-      const response = await drive.files.list({
-        pageSize: 20,
-        fields: 'nextPageToken, files(id, name, mimeType, webViewLink, iconLink)',
-        q: "trashed = false and (mimeType = 'application/pdf' or mimeType contains 'video/' or mimeType contains 'image/')",
-      });
-
-      res.json(response.data.files);
-    } catch (error) {
-      console.error('Error fetching files from Google Drive:', error);
-      res.status(500).json({ error: 'Failed to fetch files' });
-    }
-  });
-  
-  // Upload file to Google Drive
-  const upload = multer({ storage: multer.memoryStorage() });
-  app.post("/api/google/drive/upload", upload.single('file'), async (req, res) => {
-    const tokensCookie = req.cookies.google_drive_tokens;
-    if (!tokensCookie) {
-      return res.status(401).json({ error: 'Google Drive not connected' });
-    }
-
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    try {
-      const tokens = JSON.parse(tokensCookie);
-      oauth2Client.setCredentials(tokens);
-
-      const drive = google.drive({ version: 'v3', auth: oauth2Client });
-      
-      const fileMetadata = {
-        name: req.file.originalname,
-      };
-      
-      const media = {
-        mimeType: req.file.mimetype,
-        body: Readable.from(req.file.buffer),
-      };
-
-      const response = await drive.files.create({
-        requestBody: fileMetadata,
-        media: media,
-        fields: 'id, name, webViewLink',
-      });
-
-      res.json(response.data);
-    } catch (error) {
-      console.error('Error uploading to Google Drive:', error);
-      res.status(500).json({ error: 'Upload failed' });
-    }
-  });
-
   // --- Microsoft OneDrive Integration ---
+
+  // Helper to refresh Microsoft token
+  const refreshMicrosoftToken = async (refreshToken: string) => {
+    try {
+      const response = await axios.post(
+        `https://login.microsoftonline.com/common/oauth2/v2.0/token`,
+        qs.stringify({
+          client_id: MS_CLIENT_ID,
+          client_secret: MS_CLIENT_SECRET,
+          refresh_token: refreshToken,
+          grant_type: "refresh_token",
+        }),
+        { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+      );
+      return response.data;
+    } catch (error: any) {
+      console.error('Error refreshing Microsoft token:', error.response?.data || error.message);
+      throw error;
+    }
+  };
 
   // Helper to get Microsoft redirect URI dynamically
   const getMicrosoftRedirectUri = (req: express.Request) => {
@@ -269,24 +148,50 @@ async function startServer() {
     }
 
     try {
-      const tokens = JSON.parse(tokensCookie);
-      const accessToken = tokens.access_token;
+      let tokens = JSON.parse(tokensCookie);
+      let accessToken = tokens.access_token;
 
-      const response = await axios.get(
-        "https://graph.microsoft.com/v1.0/me/drive/root/children",
-        {
-          headers: { Authorization: `Bearer ${accessToken}` },
-          params: {
-            $select: "id,name,webUrl,file,folder",
-            $top: 50
+      try {
+        const response = await axios.get(
+          "https://graph.microsoft.com/v1.0/me/drive/root/children",
+          {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            params: {
+              $select: "id,name,webUrl,file,folder",
+              $top: 50
+            }
           }
+        );
+        const files = response.data.value.filter((item: any) => item.file);
+        return res.json(files);
+      } catch (error: any) {
+        if (error.response?.status === 401 && tokens.refresh_token) {
+          // Token expired, try refreshing
+          const newTokens = await refreshMicrosoftToken(tokens.refresh_token);
+          tokens = { ...tokens, ...newTokens };
+          res.cookie('onedrive_tokens', JSON.stringify(tokens), {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'none',
+            maxAge: 30 * 24 * 60 * 60 * 1000
+          });
+          accessToken = tokens.access_token;
+          
+          const retryResponse = await axios.get(
+            "https://graph.microsoft.com/v1.0/me/drive/root/children",
+            {
+              headers: { Authorization: `Bearer ${accessToken}` },
+              params: {
+                $select: "id,name,webUrl,file,folder",
+                $top: 50
+              }
+            }
+          );
+          const files = retryResponse.data.value.filter((item: any) => item.file);
+          return res.json(files);
         }
-      );
-
-      // Filter for files and specific types if needed
-      const files = response.data.value.filter((item: any) => item.file);
-
-      res.json(files);
+        throw error;
+      }
     } catch (error: any) {
       console.error('Error fetching files from OneDrive:', error.response?.data || error.message);
       res.status(500).json({ error: 'Failed to fetch files' });
@@ -305,26 +210,94 @@ async function startServer() {
     }
 
     try {
-      const tokens = JSON.parse(tokensCookie);
-      const accessToken = tokens.access_token;
+      let tokens = JSON.parse(tokensCookie);
+      let accessToken = tokens.access_token;
 
       const fileName = req.file.originalname;
-      const response = await axios.put(
-        `https://graph.microsoft.com/v1.0/me/drive/root:/${encodeURIComponent(fileName)}:/content`,
-        req.file.buffer,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": req.file.mimetype
+      
+      const uploadToOneDrive = async (token: string) => {
+        return await axios.put(
+          `https://graph.microsoft.com/v1.0/me/drive/root:/${encodeURIComponent(fileName)}:/content`,
+          req.file!.buffer,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": req.file!.mimetype
+            }
           }
-        }
-      );
+        );
+      };
 
-      res.json(response.data);
+      try {
+        const response = await uploadToOneDrive(accessToken);
+        return res.json(response.data);
+      } catch (error: any) {
+        if (error.response?.status === 401 && tokens.refresh_token) {
+          const newTokens = await refreshMicrosoftToken(tokens.refresh_token);
+          tokens = { ...tokens, ...newTokens };
+          res.cookie('onedrive_tokens', JSON.stringify(tokens), {
+            httpOnly: true,
+            secure: true,
+            sameSite: 'none',
+            maxAge: 30 * 24 * 60 * 60 * 1000
+          });
+          accessToken = tokens.access_token;
+          const retryResponse = await uploadToOneDrive(accessToken);
+          return res.json(retryResponse.data);
+        }
+        throw error;
+      }
     } catch (error: any) {
       console.error('Error uploading to OneDrive:', error.response?.data || error.message);
       res.status(500).json({ error: 'Upload failed' });
     }
+  });
+
+  // --- Payment Integration (Zain Cash & Mastercard) ---
+
+  // Mock Zain Cash Initiation
+  app.post("/api/payments/zain-cash/initiate", async (req, res) => {
+    const { amount, userId } = req.body;
+    
+    // In a real scenario, you would call Zain Cash API here
+    // For now, we simulate the redirect URL
+    const transactionId = "ZC-" + Math.random().toString(36).substr(2, 9);
+    
+    // Mock redirect URL
+    const redirectUrl = `https://test.zaincash.iq/transaction/pay?id=${transactionId}`;
+    
+    res.json({ 
+      success: true, 
+      transactionId,
+      redirectUrl
+    });
+  });
+
+  // Mock Mastercard Initiation
+  app.post("/api/payments/mastercard/initiate", async (req, res) => {
+    const { amount, userId } = req.body;
+    
+    // In a real scenario, you would call a payment gateway like Stripe or local provider
+    const transactionId = "MC-" + Math.random().toString(36).substr(2, 9);
+    
+    res.json({ 
+      success: true, 
+      transactionId,
+      redirectUrl: `https://checkout.example.com/pay?id=${transactionId}`
+    });
+  });
+
+  // Payment Callback/Verification
+  app.post("/api/payments/verify", async (req, res) => {
+    const { transactionId, status } = req.body;
+    
+    // Verify transaction with provider
+    // For mock, we just return success
+    res.json({ 
+      success: true, 
+      status: 'completed',
+      message: 'Payment verified successfully'
+    });
   });
 
   // Vite middleware for development

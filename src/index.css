@@ -6,10 +6,26 @@
   --font-display: "Noto Sans Arabic", "Space Grotesk", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   
-  --color-brand-primary: #6366F1;
-  --color-brand-secondary: #10B981;
+  --color-brand-primary: var(--primary-color, #6366F1);
+  --color-brand-secondary: var(--secondary-color, #10B981);
   --color-brand-accent: #F59E0B;
   --color-brand-rose: #F43F5E;
+}
+
+/* Theme Definitions */
+:root {
+  --primary-color: #6366F1;
+  --secondary-color: #10B981;
+}
+
+[data-theme='blue'] {
+  --primary-color: #3B82F6;
+  --secondary-color: #60A5FA;
+}
+
+[data-theme='emerald'] {
+  --primary-color: #10B981;
+  --secondary-color: #34D399;
 }
 
 /* Enable class-based dark mode for Tailwind v4 */

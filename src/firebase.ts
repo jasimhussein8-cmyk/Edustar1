@@ -156,7 +156,8 @@ export const getDocs = async (queryObj: any) => {
   try {
     return await firestoreGetDocs(queryObj);
   } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, null);
+    const path = queryObj.path || (queryObj._query && queryObj._query.path && queryObj._query.path.segments.join('/')) || null;
+    handleFirestoreError(error, OperationType.LIST, path);
   }
 };
 
@@ -165,7 +166,8 @@ export const onSnapshot = (ref: any, callback: any, errorCallback?: any) => {
     if (errorCallback) {
       errorCallback(error);
     } else {
-      handleFirestoreError(error, OperationType.GET, null);
+      const path = ref.path || (ref._query && ref._query.path && ref._query.path.segments.join('/')) || null;
+      handleFirestoreError(error, OperationType.GET, path);
     }
   });
 };

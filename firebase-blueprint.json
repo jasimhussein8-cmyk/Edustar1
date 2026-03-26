@@ -2,22 +2,27 @@
   "entities": {
     "User": {
       "title": "User",
-      "description": "User profile and stats",
+      "description": "User profile information",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
         "username": { "type": "string" },
-        "full_name": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
         "role": { "type": "string", "enum": ["admin", "teacher", "student"] },
         "grade": { "type": "string" },
-        "points": { "type": "number" },
-        "coins": { "type": "number" }
+        "section": { "type": "string" },
+        "assigned_grades": { "type": "array", "items": { "type": "string" } },
+        "assigned_sections": { "type": "array", "items": { "type": "string" } },
+        "assigned_subjects": { "type": "array", "items": { "type": "string" } },
+        "full_name": { "type": "string" },
+        "points": { "type": "integer" },
+        "coins": { "type": "integer" }
       },
-      "required": ["id", "username", "full_name", "role"]
+      "required": ["id", "username", "role", "full_name"]
     },
     "Subject": {
       "title": "Subject",
-      "description": "Educational subject",
+      "description": "Educational subject for a specific grade",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
@@ -28,33 +33,35 @@
     },
     "Lesson": {
       "title": "Lesson",
-      "description": "Educational lesson",
+      "description": "A lesson within a subject",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "subject_id": { "type": "string" },
+        "subjectId": { "type": "string" },
         "title": { "type": "string" },
         "content": { "type": "string" },
         "type": { "type": "string", "enum": ["video", "pdf", "text"] },
         "url": { "type": "string" }
       },
-      "required": ["id", "subject_id", "title", "type"]
+      "required": ["id", "subjectId", "title", "type"]
     },
     "Exam": {
       "title": "Exam",
-      "description": "Subject exam",
+      "description": "An exam for a subject",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "subject_id": { "type": "string" },
+        "subjectId": { "type": "string" },
         "title": { "type": "string" },
-        "duration": { "type": "number" }
+        "duration": { "type": "integer" },
+        "type": { "type": "string", "enum": ["internal", "google_form"] },
+        "googleFormUrl": { "type": "string" }
       },
-      "required": ["id", "subject_id", "title"]
+      "required": ["id", "subjectId", "title", "duration"]
     },
     "Question": {
       "title": "Question",
-      "description": "Exam question",
+      "description": "A question within an exam",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
@@ -64,29 +71,225 @@
         "correct_answer": { "type": "string" },
         "type": { "type": "string", "enum": ["mcq", "tf", "short"] }
       },
-      "required": ["id", "exam_id", "question_text", "correct_answer", "type"]
+      "required": ["id", "exam_id", "question_text", "options", "correct_answer", "type"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A message between users",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "sender_id": { "type": "string" },
+        "receiver_id": { "type": "string" },
+        "content": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "sender_name": { "type": "string" }
+      },
+      "required": ["id", "sender_id", "receiver_id", "content", "created_at"]
+    },
+    "Assignment": {
+      "title": "Assignment",
+      "description": "A homework assignment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "due_date": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "subjectId", "title", "due_date"]
+    },
+    "Submission": {
+      "title": "Submission",
+      "description": "A student's submission for an assignment",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "assignmentId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "content": { "type": "string" },
+        "fileUrl": { "type": "string" },
+        "file_name": { "type": "string" },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "grade": { "type": "integer" },
+        "feedback": { "type": "string" }
+      },
+      "required": ["id", "assignmentId", "studentId", "submittedAt"]
+    },
+    "Progress": {
+      "title": "Progress",
+      "description": "Student progress in a subject",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "subjectId": { "type": "string" },
+        "completed": { "type": "integer" },
+        "total": { "type": "integer" }
+      },
+      "required": ["userId", "subjectId"]
+    },
+    "Recommendation": {
+      "title": "Recommendation",
+      "description": "AI-generated recommendations for students",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "content_type": { "type": "string" },
+        "content_id": { "type": "string" },
+        "title": { "type": "string" },
+        "reason": { "type": "string" }
+      },
+      "required": ["userId", "title"]
+    },
+    "Favorite": {
+      "title": "Favorite",
+      "description": "User's favorite lessons",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "lessonId": { "type": "string" }
+      },
+      "required": ["userId", "lessonId"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Payment records",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "amount": { "type": "number" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "amount", "status"]
+    },
+    "GradeContent": {
+      "title": "GradeContent",
+      "description": "Content specific to a grade level",
+      "type": "object",
+      "properties": {
+        "grade": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "type": { "type": "string" },
+        "url": { "type": "string" }
+      },
+      "required": ["grade", "title", "type"]
+    },
+    "Reward": {
+      "title": "Reward",
+      "description": "Available rewards in the shop",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "cost": { "type": "integer" },
+        "type": { "type": "string" }
+      },
+      "required": ["name", "cost"]
+    },
+    "UserReward": {
+      "title": "UserReward",
+      "description": "Rewards purchased by users",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "rewardId": { "type": "string" }
+      },
+      "required": ["userId", "rewardId"]
+    },
+    "ExamSubmission": {
+      "title": "ExamSubmission",
+      "description": "Student's exam results",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "examId": { "type": "string" },
+        "score": { "type": "integer" },
+        "total": { "type": "integer" }
+      },
+      "required": ["userId", "examId"]
+    },
+    "Note": {
+      "title": "Note",
+      "description": "User's notes on lessons",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "lessonId": { "type": "string" },
+        "content": { "type": "string" }
+      },
+      "required": ["userId", "lessonId", "content"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
-      "description": "User documents"
+      "description": "User profiles"
     },
     "/subjects/{subjectId}": {
       "schema": "Subject",
-      "description": "Subject documents"
+      "description": "Subjects offered"
     },
     "/lessons/{lessonId}": {
       "schema": "Lesson",
-      "description": "Lesson documents"
+      "description": "Lessons for subjects"
     },
     "/exams/{examId}": {
       "schema": "Exam",
-      "description": "Exam documents"
+      "description": "Exams for subjects"
     },
     "/questions/{questionId}": {
       "schema": "Question",
-      "description": "Question documents"
+      "description": "Questions for exams"
+    },
+    "/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Chat messages"
+    },
+    "/assignments/{assignmentId}": {
+      "schema": "Assignment",
+      "description": "Homework assignments"
+    },
+    "/submissions/{submissionId}": {
+      "schema": "Submission",
+      "description": "Assignment submissions"
+    },
+    "/progress/{progressId}": {
+      "schema": "Progress",
+      "description": "Student progress"
+    },
+    "/recommendations/{recId}": {
+      "schema": "Recommendation",
+      "description": "AI Recommendations"
+    },
+    "/favorites/{favId}": {
+      "schema": "Favorite",
+      "description": "User favorites"
+    },
+    "/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Payment records"
+    },
+    "/grade_content/{contentId}": {
+      "schema": "GradeContent",
+      "description": "Grade-specific content"
+    },
+    "/rewards/{rewardId}": {
+      "schema": "Reward",
+      "description": "Shop rewards"
+    },
+    "/user_rewards/{userRewardId}": {
+      "schema": "UserReward",
+      "description": "Purchased rewards"
+    },
+    "/exam_submissions/{examSubId}": {
+      "schema": "ExamSubmission",
+      "description": "Exam results"
+    },
+    "/notes/{noteId}": {
+      "schema": "Note",
+      "description": "User notes"
     }
   }
 }

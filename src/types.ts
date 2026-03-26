@@ -1,4 +1,5 @@
 export type Role = 'admin' | 'teacher' | 'student';
+export type Theme = 'light' | 'dark' | 'system' | 'blue' | 'emerald';
 
 export interface User {
   id: string;

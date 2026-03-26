@@ -2,46 +2,171 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId (Auth UID)
+    // Fields:
+    //   - id: string (required)
+    //   - username: string (required)
+    //   - email: string (optional)
+    //   - role: string (required, enum: admin, teacher, student)
+    //   - grade: string (optional)
+    //   - section: string (optional)
+    //   - assigned_grades: list (optional)
+    //   - assigned_sections: list (optional)
+    //   - assigned_subjects: list (optional)
+    //   - full_name: string (required)
+    //   - points: number (optional)
+    //   - coins: number (optional)
+    //
+    // Collection: subjects
+    // Document ID: subjectId
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required)
+    //   - grade: string (required)
+    //
+    // Collection: lessons
+    // Document ID: lessonId
+    // Fields:
+    //   - id: string (required)
+    //   - subjectId: string (required)
+    //   - title: string (required)
+    //   - content: string (required)
+    //   - type: string (required, enum: video, pdf, text)
+    //   - url: string (optional)
+    //
+    // Collection: exams
+    // Document ID: examId
+    // Fields:
+    //   - id: string (required)
+    //   - subjectId: string (required)
+    //   - title: string (required)
+    //   - duration: number (required)
+    //   - type: string (optional, enum: internal, google_form)
+    //   - googleFormUrl: string (optional)
+    //
+    // Collection: questions
+    // Document ID: questionId
+    // Fields:
+    //   - id: string (required)
+    //   - exam_id: string (required)
+    //   - question_text: string (required)
+    //   - options: list (required)
+    //   - correct_answer: string (required)
+    //   - type: string (required, enum: mcq, tf, short)
+    //
+    // Collection: messages
+    // Document ID: messageId
+    // Fields:
+    //   - id: string (required)
+    //   - sender_id: string (required)
+    //   - receiver_id: string (required)
+    //   - content: string (required)
+    //   - created_at: timestamp (required)
+    //   - sender_name: string (optional)
+    //
+    // Collection: assignments
+    // Document ID: assignmentId
+    // Fields:
+    //   - id: string (required)
+    //   - subjectId: string (required)
+    //   - title: string (required)
+    //   - description: string (required)
+    //   - due_date: timestamp (required)
+    //
+    // Collection: submissions
+    // Document ID: submissionId
+    // Fields:
+    //   - id: string (required)
+    //   - assignmentId: string (required)
+    //   - studentId: string (required)
+    //   - content: string (optional)
+    //   - fileUrl: string (optional)
+    //   - file_name: string (optional)
+    //   - submittedAt: timestamp (required)
+    //   - grade: number (optional)
+    //   - feedback: string (optional)
+    //
+    // ===============================================================
+
+    // ===============================================================
     // Helper Functions
     // ===============================================================
+    
     function isAuthenticated() {
       return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+          (request.auth.token.email == "jasimhussein8@gmail.com" && request.auth.token.email_verified == true) ||
+          (request.auth.token.email == "admin@staredu.com"));
+    }
+
+    function isTeacher() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher';
+    }
+
+    function isStudent() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'student';
     }
 
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    function isTeacher() {
-      return isAuthenticated() && 
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher');
-    }
-
-    function isAdmin() {
-      return isAuthenticated() && 
-        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-         (request.auth.token.email == "jasimhussein8@gmail.com" && request.auth.token.email_verified == true) ||
-         (request.auth.token.email == "jasimhussein8@staredu.com"));
-    }
-
     function isValidUser(data) {
-      return data.keys().hasAll(['username', 'full_name', 'role']) &&
-             data.username is string && data.username.size() > 0 && data.username.size() < 50 &&
-             data.full_name is string && data.full_name.size() > 0 && data.full_name.size() < 100 &&
-             data.role in ['admin', 'teacher', 'student'];
+      return data.keys().hasAll(['id', 'username', 'role', 'full_name']) &&
+             data.id is string && data.id.size() > 0 &&
+             data.username is string && data.username.size() > 0 &&
+             data.role in ['admin', 'teacher', 'student'] &&
+             data.full_name is string && data.full_name.size() > 0;
     }
 
     function isValidSubject(data) {
-      return data.keys().hasAll(['name', 'grade']) &&
-             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
-             data.grade is string && data.grade.size() > 0 && data.grade.size() < 50;
+      return data.keys().hasAll(['id', 'name', 'grade']) &&
+             data.id is string && data.name is string && data.grade is string;
     }
 
     function isValidLesson(data) {
-      return data.keys().hasAll(['subjectId', 'title', 'type']) &&
-             data.subjectId is string &&
-             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+      return data.keys().hasAll(['id', 'subjectId', 'title', 'type']) &&
+             data.id is string && data.subjectId is string && data.title is string &&
              data.type in ['video', 'pdf', 'text'];
+    }
+
+    function isValidExam(data) {
+      return data.keys().hasAll(['id', 'subjectId', 'title', 'duration']) &&
+             data.id is string && data.subjectId is string && data.title is string &&
+             data.duration is int;
+    }
+
+    function isValidQuestion(data) {
+      return data.keys().hasAll(['id', 'exam_id', 'question_text', 'options', 'correct_answer', 'type']) &&
+             data.id is string && data.exam_id is string && data.question_text is string &&
+             data.options is list && data.correct_answer is string &&
+             data.type in ['mcq', 'tf', 'short'];
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['id', 'sender_id', 'receiver_id', 'content', 'created_at']) &&
+             data.id is string && data.sender_id is string && data.receiver_id is string &&
+             data.content is string && data.created_at is timestamp;
+    }
+
+    function isValidAssignment(data) {
+      return data.keys().hasAll(['id', 'subjectId', 'title', 'due_date']) &&
+             data.id is string && data.subjectId is string && data.title is string &&
+             data.due_date is timestamp;
+    }
+
+    function isValidSubmission(data) {
+      return data.keys().hasAll(['id', 'assignmentId', 'studentId', 'submittedAt']) &&
+             data.id is string && data.assignmentId is string && data.studentId is string &&
+             data.submittedAt is timestamp;
     }
 
     // ===============================================================
@@ -50,15 +175,14 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == 'student';
-      allow update: if isAuthenticated() && (isOwner(userId) || isAdmin()) && isValidUser(request.resource.data) && (isAdmin() || request.resource.data.role == resource.data.role);
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && (isOwner(userId) || isAdmin());
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && (isOwner(userId) || isAdmin());
       allow delete: if isAdmin();
     }
 
     match /subjects/{subjectId} {
       allow read: if isAuthenticated();
-      allow create, update: if isAdmin() && isValidSubject(request.resource.data);
-      allow delete: if isAdmin();
+      allow create, update, delete: if isAdmin() || isTeacher();
     }
 
     match /lessons/{lessonId} {
@@ -76,20 +200,78 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin() || isTeacher();
     }
 
+    match /messages/{messageId} {
+      allow read: if isAuthenticated() && (request.auth.uid in resource.data.participants || isAdmin());
+      allow create: if isAuthenticated() && isValidMessage(request.resource.data) && request.auth.uid in request.resource.data.participants;
+      allow update, delete: if isAdmin();
+    }
+
     match /assignments/{assignmentId} {
       allow read: if isAuthenticated();
       allow create, update, delete: if isAdmin() || isTeacher();
     }
 
     match /submissions/{submissionId} {
-      allow read: if isAuthenticated() && (isOwner(resource.data.studentId) || isTeacher() || isAdmin());
-      allow create: if isAuthenticated() && isOwner(request.resource.data.studentId);
-      allow update: if isAuthenticated() && (isAdmin() || isTeacher());
+      allow read: if isAuthenticated() && (isStudent() && request.auth.uid == resource.data.studentId || isTeacher() || isAdmin());
+      allow create: if isAuthenticated() && isStudent() && isValidSubmission(request.resource.data) && request.auth.uid == request.resource.data.studentId;
+      allow update: if isAuthenticated() && (isTeacher() || isAdmin() || (isStudent() && request.auth.uid == resource.data.studentId));
       allow delete: if isAdmin();
     }
 
-    match /{path=**} {
-      allow read, write: if isAdmin();
+    match /progress/{progressId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.userId || isTeacher() || isAdmin());
+      allow write: if isAuthenticated() && (request.auth.uid == request.resource.data.userId || isTeacher() || isAdmin());
+    }
+
+    match /recommendations/{recId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.userId || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    match /favorites/{favId} {
+      allow read: if isAuthenticated() && request.auth.uid == resource.data.userId;
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.userId;
+      allow delete: if isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.userId || isAdmin());
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.userId;
+      allow update, delete: if isAdmin();
+    }
+
+    match /grade_content/{contentId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdmin() || isTeacher();
+    }
+
+    match /rewards/{rewardId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /user_rewards/{userRewardId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.userId || isAdmin());
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.userId;
+    }
+
+    match /exam_submissions/{examSubId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.userId || isTeacher() || isAdmin());
+      allow create: if isAuthenticated() && request.auth.uid == request.resource.data.userId;
+    }
+
+    match /notes/{noteId} {
+      allow read: if isAuthenticated() && request.auth.uid == resource.data.userId;
+      allow create, update, delete: if isAuthenticated() && request.auth.uid == (resource == null ? request.resource.data.userId : resource.data.userId);
+    }
+
+    match /app_config/{configId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+    
+    match /test/connection {
+      allow read: if true;
     }
   }
 }
